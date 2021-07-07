@@ -554,7 +554,7 @@ class Reactor(Unit, PressureVessel, isabstract=True):
         Mechanical mixing intensity, [/s].
     kW_per_m3: float
         Power usage of agitator
-        (converted from 0.5 hp/1000 gal as in [1]).
+        (converted from 0.5 hp/1000 gal as in [1]_).
         If mixing_intensity is provided, this will be calculated based on
         the mixing_intensity and viscosity of the influent mixture as in [2]_
     wall_thickness_factor=1: float

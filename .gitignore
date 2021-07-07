@@ -44,3 +44,7 @@ Thumbs.db
 # Python caches #
 #################
 **/__pycache__
+
+# Configuration files #
+#######################
+*.spyproject*
