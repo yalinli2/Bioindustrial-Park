@@ -14,6 +14,7 @@ import biosteam as bst
 from biosteam import main_flowsheet as f
 from biosteam import units, SystemFactory
 from ._process_settings import price
+from .units import BlendingTankWithSkimming, GlycerolysisReactor
 from ..sugarcane import (
     create_feedstock_handling_system,
     create_sucrose_to_ethanol_system, 
@@ -26,6 +27,7 @@ __all__ = (
     'create_juicing_system',
     'create_lipid_wash_system',
     'create_juicing_and_lipid_extraction_system',
+    'create_lipid_pretreatment_system',
     'create_transesterification_and_biodiesel_separation_system',
     'create_lipidcane_to_biodiesel_and_conventional_ethanol_system',
 )
@@ -41,7 +43,7 @@ __all__ = (
               Glucose=2007.067,
               Hemicellulose=15922.734,
               Lignin=14459.241,
-              Lipid=10035.334,
+              TAG=10035.334,
               Solids=5017.667,
               Sucrose=22746.761,
               Water=234157.798,
@@ -176,10 +178,80 @@ def create_juicing_system(ins, outs, pellet_bagasse=None):
     u.C201.isplit['Lipid'] = 0.99 # Clarifier
     u.S202.isplit['Lipid'] = 0.999  # Fiber screener #2
     
+@SystemFactory(
+    ID="lipid_pretreatment_sys",
+    ins=[dict(ID='crude_vegetable_oil',
+              Water=0.0184,
+              TAG=11.1,
+              PL=0.1),
+         dict(ID='acetone',
+              price=0.80),
+         dict(ID='pure_glycerine')],
+    outs=[dict(ID='degummed_oil'),
+          dict(ID='polar_lipids')]
+)
+def create_lipid_pretreatment_system(ins, outs, FFA_fraction=None):
+    crude_vegetable_oil, acetone, pure_glycerine = ins
+    degummed_oil, polar_lipids = outs
+    T1 = bst.StorageTank('T1', acetone, tau=7*24)
+    P1 = bst.Pump('P1', T1-0, P=101325.)
+    T2 = bst.StorageTank('T2', pure_glycerine, tau=7*24)
+    P2 = bst.Pump('P2', T2-0, P=101325.)
+    N2 = bst.Stream('N2', phase='g')
+    acetone_recycle = bst.Stream()
+    T3 = BlendingTankWithSkimming('T3', 
+        [crude_vegetable_oil, acetone_recycle], 
+    )
+    @T3.add_specification(run=True)
+    def adjust_acetone_flow_rate():
+        total_acetone_required = T3.ins[0].F_vol
+        recycle_acetone = sum([i.outs[0].ivol['Acetone'] for i in (P5, P6)])
+        fresh_acetone = T1.ins[0]
+        acetone_required = total_acetone_required - recycle_acetone
+        if acetone_required < 0.:
+            fresh_acetone.ivol['Acetone'] = 0.
+            P5.outs[0].ivol['Acetone'] = total_acetone_required
+        else:
+            fresh_acetone.ivol['Acetone'] = acetone_required
+        T1._run()
+        P1._run()
+        M1._run()
+        
+    P3 = bst.Pump('P3', T3-1, P=101325)
+    F1 = bst.Flash('F1', P3-0, T=373.15, P=101325)
+    H1 = bst.HXutility('H1', F1-0, V=0, rigorous=True)
+    P5 = bst.Pump('P5', H1-0, P=101325)
+    F2 = bst.Flash('F2', T3-0, ['', polar_lipids], T=350, P=101325)
+    H2 = bst.HXutility('H2', F2-0, V=0, rigorous=True)
+    P6 = bst.Pump('P6', H2-0, P=101325)
+    M1 = bst.Mixer('M1', [P1-0, P5-0, P6-0], acetone_recycle)
+    P4 = bst.Pump('P4', F1-1, P=101325)
+    hx_stream = bst.Stream()
+    H3 = bst.HXprocess('H3', [P4-0, hx_stream])
+    glycerol_recycle = bst.Stream()
+    M2 = bst.Mixer('M2', [P2-0, glycerol_recycle])
+    R1 = GlycerolysisReactor('R1', [H3-0, M2-0, N2])
+    P7 = bst.Pump('P7', R1-1, hx_stream, P=101325.)
+    
+    @R1.add_specification(run=True)
+    def adjust_feed_flow_rates():
+        lipid = R1.ins[0]
+        T2.ins[0].imol['Glycerol'] = 6.0 * lipid.imol['Lipid'] - M2.ins[1].imol['Glycerol']
+        R1.ins[2].ivol['N2'] = lipid.F_vol
+        T2._run()
+        P2._run()
+        M2._run()
+        
+    H4 = bst.HXutility('H4', H3-1, T=333.15, V=0)
+    C1 = bst.LiquidsSplitCentrifuge('C1', H4-0, ['', glycerol_recycle],
+                                    split=dict(Lipid=1.))
+    P8 = bst.Pump('P8', C1-0, degummed_oil)
 
 @SystemFactory(
     ID="transesterification_and_biodiesel_separation_sys",
-    ins=[dict(ID='oil')],
+    ins=[dict(ID='vegetable_oil',
+              Water=0.0184,
+              TAG=11.1)],
     outs=[dict(ID='biodiesel'),
           dict(ID='crude_glycerol')]
 )
@@ -252,8 +324,8 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
     S401 = bst.FakeSplitter('S401')
     
     # First Reactor
-    R401 = units.Transesterification('R401', efficiency=0.90, methanol2lipid=6, T=333.15,
-                             catalyst_molfrac=x_cat)
+    R401 = units.Transesterification('R401', efficiency=0.90, excess_methanol=1.,
+                                     T=333.15, x_catalyst=x_cat)
     
     # Centrifuge to remove glycerol
     C401 = units.LiquidsSplitCentrifuge('C401',
@@ -269,8 +341,8 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
     P405 = units.Pump('P405')
     
     # Second Reactor
-    R402 = units.Transesterification('R402', efficiency=0.90, methanol2lipid=6, T=333.15,
-                             catalyst_molfrac=x_cat) 
+    R402 = units.Transesterification('R402', efficiency=0.90, excess_methanol=1., 
+                                     T=333.15, x_catalyst=x_cat)
     
     def adjust_feed_to_reactors():
         R402._run()
@@ -318,7 +390,7 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
                              Ks=np.array([0.382, 0.183]),
                              top_solvents=('Biodiesel',),
                              top_split=(0.999,),
-                             bot_solvents=('Water', 'Lipid', 'NaOH', 'HCl'),
+                             bot_solvents=('Water', 'TAG', 'NaOH', 'HCl'),
                              bot_split=(0.999, 1, 1, 1))
     
     # Vacuum dry biodiesel
@@ -330,17 +402,17 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
                     P=2026.5, T=331.5, Q=0)
     F401.line = 'Vacuum dryer'
     F401.material = 'Stainless steel 304'
-    P407 = units.Pump('P407')
+    P407 = units.Pump('P407', P=101325.)
     
     ### Glycerol Purification Section ###
     
     # Condense vacuumed methanol to recycle
     H401 = units.HXutility('H401', V=0, T=295)
-    P408 = units.Pump('P408')
+    P408 = units.Pump('P408', P=101325.)
     
     # Mix recycled streams and HCl
     T406 = units.MixTank('T406')
-    P409 = units.Pump('P409')
+    P409 = units.Pump('P409', P=101325.)
     
     # Centrifuge out waste fat
     # assume all the lipid, free_lipid and biodiesel is washed out
@@ -361,15 +433,15 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
                       vessel_material='Stainless steel 304',
                       tray_material='Stainless steel 304')
     
-    # Condense water to recycle
-    H402 = units.HXutility('H402', T=353, V=0)
+    # Save column utilities
+    H402 = units.HXprocess('H402')
     
     # Glycerol/Water flash (not a distillation column)
     chemicals = H402.chemicals
     w = 0.20/chemicals.Water.MW
     g = 0.80/chemicals.Glycerol.MW
     x_water = w/(w+g)
-    ideal_thermo = D401.thermo.ideal()
+    # ideal_thermo = D401.thermo.ideal()
     D402 = units.BinaryDistillation('D402',
                         LHK=('Water', 'Glycerol'),
                         k=1.25,
@@ -378,9 +450,8 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
                         x_bot=x_water,
                         tray_material='Stainless steel 304',
                         vessel_material='Stainless steel 304',
-                        partial_condenser=False,
-                        condenser_thermo=ideal_thermo,
-                        boiler_thermo=ideal_thermo)
+                        partial_condenser=False)
+    P413 = units.Pump('P413', P=101325.,)
     
     def startup_water():
         imol = D402.ins[0].imol
@@ -390,7 +461,8 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
             imol['Water'] = minimum_water
         D402._run()
         # Remove accumulation
-        D402.outs[0].imol['Water'] = 1100*C402.outs[0].imol['Glycerol']
+        D402.outs[0].imol['Water'] = 800.*C402.outs[0].imol['Glycerol']
+        D402.outs[0].T = D402.outs[0].bubble_point_at_P().T
             
     D402.specification = startup_water
     
@@ -446,8 +518,8 @@ def create_transesterification_and_biodiesel_separation_system(ins, outs):
     C401-1-P405
     (P405-0, C402-1, C403-1, P408-0, HCl2)-T406-P409-C404
     (C404-0, NaOH)-T407-P410
-    H402-0-D401-1-D402-1-T408
-    P410-0-H402                
+    P410-0-H402-0-D401-1-D402-1-P413-0-1-H402-1-T408
+                 
     
     # Mass Balance for Methanol, Recycle Methanol, and Catalyst stream
     B401 = bst.MassBalance('B401',
