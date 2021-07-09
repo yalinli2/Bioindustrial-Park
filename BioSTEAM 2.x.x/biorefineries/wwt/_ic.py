@@ -9,213 +9,19 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
-'''
-TODO:
-	Consider the C/N ratio, George's analysis shows it's very low
-	Consider sulfate and sulfide
-	Check with Brian's AnMBR paper and see the COD<1300 mg/L not preferable thing
-    Add an HX for temperature control
-'''
-
-import numpy as np
 import sympy as sp
 import biosteam as bst
 import thermosteam as tmo
-from collections import defaultdict
-from chemicals.elements import molecular_weight
 from biosteam.exceptions import DesignError
-from biosteam.utils import ExponentialFunctor
-from biosteam.units.design_tools.tank_design import (
-    mix_tank_purchase_cost_algorithms,
-    TankPurchaseCostAlgorithm
+#!!! Need to enable relative importing
+from _utils import (
+    get_BD_dct,
+    compute_stream_COD,
+    get_AD_rxns,
+    IC_purchase_cost_algorithms
     )
 
-Rxn = tmo.reaction.Reaction
-PRxn = tmo.reaction.ParallelReaction
-
 __all__ = ('IC',)
-
-
-# %%
-
-# =============================================================================
-# Util functions
-# =============================================================================
-
-def get_CHONSP(chemical):
-    organic = True
-    atoms = chemical.atoms
-
-    CHONSP = []
-    for atom in ('C', 'H', 'O', 'N', 'S', 'P'):
-        CHONSP.append(atoms.get(atom) or 0.,)
-
-    if CHONSP[0] <= 0 or CHONSP[1] <= 0: # does not have C or H
-        if not (len(atoms) == 1 and CHONSP[1] == 2): # count H2 as organic
-            organic = False
-
-    if sum(v for v in atoms.values()) != sum(CHONSP): # contains other elements
-        organic = False
-
-    return CHONSP if organic else [0.]*6
-
-
-def get_COD_stoichiometry(chemical):
-    r'''
-    Get the molar stoichiometry for the theoretical
-    chemical oxygen demand (COD) of a given chemical as in:
-
-    .. math::
-        C_nH_aO_bN_cS_dP_e + \frac{2n+0.5a-b-1.5c+3d+2.5e}{2}O_2
-        -> nCO_2 + \frac{a-3c-2d}{2}H_2O + cNH_3 + dH_2SO_4 + \frac{e}{4}P_4O_10
-    '''
-    Xs = nC, nH, nO, nN, nS, nP = get_CHONSP(chemical)
-
-    dct = {
-        chemical.ID: -1. if sum(Xs)!=0 else 0.,
-        'O2': -(nC+0.25*nH-0.5*nO-0.75*nN+1.5*nS+1.25*nP),
-        'CO2': nC,
-        'H2O': 0.5*nH-1.5*nN-nS, # assume one water reacts with SO3 to H2SO4
-        'NH3': nN,
-        'H2SO4': nS,
-        'P4O10': 0.25*nP
-        }
-
-    return dct
-
-
-def get_BMP_stoichiometry(chemical):
-    r'''
-    Compute the theoretical biochemical methane potential (BMP) in
-    mol :math:`CH_4`/mol chemical of a given chemical using:
-
-    .. math::
-        C_vH_wO_xN_yS_z + \frac{4v-w-2x+3y+2z}{2}H2O ->
-        \frac{4v+w-2x-3y-2z}{8}CH4 + \frac{(4v-w+2x+3y+2z}{8}CO2 + yNH_3 + zH_2S
-    '''
-    Xs = nC, nH, nO, nN, nS, nP = get_CHONSP(chemical)
-
-    dct = {
-        chemical.ID: -1. if sum(Xs)!=0 else 0.,
-        'H2O': -(nC-0.25*nH-0.5*nO+0.75*nN+0.5*nS),
-        'CH4': 0.5*nC+0.125*nH-0.25*nO-0.375*nN-0.25*nS,
-        'CO2': 0.5*nC-0.125*nH+0.25*nO+0.375*nN+0.25*nS,
-        'NH3': nN,
-        'H2S': nS
-        }
-
-    return dct
-
-
-# Biodegradability, 0.87 from glucose (treated as the maximum value)
-def get_BD_dct(default_BD=0.87, **kwargs):
-    BD_dct = defaultdict(lambda: default_BD)
-
-    # Based on Kontos thesis
-    BD_dct['AceticAcid'] = 0.87
-    BD_dct['Arabinose'] = 0.2
-    BD_dct['Glucose'] = 0.87
-    BD_dct['GlucoseOligomer'] = BD_dct['Glucan'] = 0.81
-    BD_dct['HMF'] = 0.85
-    BD_dct['LacticAcid'] = 0.85
-    BD_dct['Lignin'] = BD_dct['SolubleLignin'] = 0.001
-    BD_dct['Tar'] = 0.
-    BD_dct['Xylose'] = 0.8
-    BD_dct['XyloseOligomer'] = BD_dct['Xylan'] = 0.75
-
-    # Other assumptions
-    C6_oligomer_to_monomer = BD_dct['GlucoseOligomer'] / BD_dct['Glucose']
-    C5_oligomer_to_monomer = BD_dct['XyloseOligomer'] / BD_dct['Xylose']
-
-    BD_dct['GalactoseOligomer'] = BD_dct['Galactan'] = \
-        C6_oligomer_to_monomer * BD_dct['Galactose']
-    BD_dct['MannoseOligomer'] = BD_dct['Mannan'] = \
-        C6_oligomer_to_monomer * BD_dct['Mannose']
-    BD_dct['ArabinoseOligomer'] = BD_dct['Arabinan'] = \
-        C5_oligomer_to_monomer * BD_dct['Arabinose']
-
-    if kwargs:
-        BD_dct.update(kwargs)
-
-    return BD_dct
-
-
-def compute_stream_COD(stream, BD_dct=None):
-    r'''
-    Compute the chemical oxygen demand (COD) of a given stream in kg/m3
-    by summing the COD of each chemical in the stream using:
-
-    .. math::
-        COD [\frac{kg}{m^3}] = mol_{chemical} [\frac{kmol}{m^3}] * \frac{g O_2}{mol chemical}
-
-    Can be limited to only biodegradable COD if `BD_dct` is provided.
-    '''
-    chems = stream.chemicals
-    mol = stream.mol
-    iCOD = np.array([-get_COD_stoichiometry(i)['O2'] for i in chems])
-
-    # Consider biodegradability
-    if BD_dct:
-        iCOD *= np.array([BD_dct[i.ID] for i in chems])
-
-    COD = (mol*iCOD).sum() / stream.F_vol * molecular_weight({'O': 2})
-    return COD
-
-
-def get_AD_rxns(stream, BD_dct, X_biogas, X_growth, biomass_ID):
-    biomass_MW = getattr(stream.chemicals, biomass_ID).MW
-    chems = [i for i in stream.chemicals if i.ID!=biomass_ID]
-    if X_biogas+X_growth > 1:
-        raise ValueError(f'Sum of `X_biogas` and `X_biogas` is {X_biogas+X_growth}, '
-                         'larger than 100%.')
-
-    biogas_rxns = []
-    growth_rxns = []
-    for i in chems:
-        X = BD_dct.get(i.ID)
-        if not X: # no entry for the chemical
-            if isinstance(X, defaultdict): # check if have default value
-                X = BD_dct[i.ID]
-            else:
-                continue # assume is not biodegradable
-
-        iX_biogas = X * X_biogas # the amount of chemical used for biogas production
-        iX_growth = X * X_growth # the amount of chemical used for cell growth
-
-        biogas_stoyk = get_BMP_stoichiometry(i)
-        if biogas_stoyk[i.ID] == 0: # no conversion of this chemical
-            continue
-
-        biogas_rxn = Rxn(reaction=biogas_stoyk, reactant=i.ID, X=iX_biogas,
-                         check_atomic_balance=True)
-        # Cannot check atom balance since the substrate may not have the atom
-        growth_rxn = Rxn(f'{i.ID} -> {i.MW/biomass_MW}{biomass_ID}',
-                         reactant=i.ID, X=iX_growth, check_atomic_balance=False)
-
-        biogas_rxns.append(biogas_rxn)
-        growth_rxns.append(growth_rxn)
-
-    if len(biogas_rxns)>1:
-        return PRxn(biogas_rxns+growth_rxns)
-
-    return []
-
-
-# Tank cost algorithms
-IC_purchase_cost_algorithms = mix_tank_purchase_cost_algorithms.copy()
-conventional = IC_purchase_cost_algorithms['Conventional']
-#!!! Need to check if the cost correlation still holds for the ranges beyond
-ic = TankPurchaseCostAlgorithm(
-    ExponentialFunctor(A=conventional.f_Cp.A,
-                       n=conventional.f_Cp.n),
-    V_min=np.pi/4*1.5**2*16, # 1.5 and 16 are the lower bounds of the width and height ranges in ref [1]
-    V_max=np.pi/4*12**2*25, # 12 and 25 are the lower bounds of the width and height ranges in ref [1]
-    V_units='m^3',
-    CE=conventional.CE,
-    material='Stainless steel')
-
-IC_purchase_cost_algorithms['IC'] = ic
-
 
 
 # %%
@@ -261,6 +67,8 @@ class IC(bst.MixTank):
         Electricity requirement per unit volume, [kW/m^3].
         Default to 0 as IC reactors realizes mixing through internal circulation
         caused by the rising force of the generated biogas.
+    T : float
+        Temperature of the reactor.
     kwargs : dict
         Other keyword arguments (e.g., Fxb, Fxt).
 
@@ -287,19 +95,21 @@ class IC(bst.MixTank):
     # Design and operating assumptions
     _Fxb = 0.0032
     _Fxt = 0.0281
-    _BD_dct = get_BD_dct()
+    _BD_dct = get_BD_dct(1.)
 
     # Related to cost algorithm
     _default_vessel_type = 'IC'
     _default_vessel_material = 'Stainless steel'
     purchase_cost_algorithms = IC_purchase_cost_algorithms
 
+    # Heating utilities
+    auxiliary_unit_names = ('heat_exchanger',)
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  method='separate', OLRall=1.25, CODrm=0.8, qw=0.05,
                  Y=0.07, mu_max=0.01, b=0.00083, V_wf=0.8,
                  vessel_type='IC', vessel_material='Stainless steel',
-                 kW_per_m3=0., **kwargs):
+                 kW_per_m3=0., T=35+273.15, **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.method = method
         self.OLRall = OLRall
@@ -312,6 +122,9 @@ class IC(bst.MixTank):
         self.vessel_type = 'IC'
         self.vessel_material = vessel_material
         self.kW_per_m3 = kW_per_m3
+        self.T = T
+        self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
+        self.heat_utilities = hx.heat_utilities
 
         # Initiate the attributes
         self._Vliq = self._Vb = self._Vt = None
@@ -325,18 +138,21 @@ class IC(bst.MixTank):
             setattr(self, k, v)
 
 
-    def refresh_rxns(self):
+    def _get_AD_rxns(self):
         '''Refresh the auto-generated biogas and growth reactions.'''
         X_growth = self.Y * self.CODrm
         X_biogas = self.CODrm - X_growth
-        self._AD_rxns = get_AD_rxns(self.ins[0], get_BD_dct(1.),
-                                    X_biogas, X_growth, 'WWTsludge')
+        rxns = get_AD_rxns(self.ins[0], self.BD_dct,
+                           X_biogas, X_growth, 'WWTsludge')
+        return rxns
+
 
 
     def _run(self):
         inf = tmo.Stream()
         inf.mix_from(self.ins)
-        eff, waste, biogas = self.outs
+        self._inf = inf
+        biogas, eff, waste  = self.outs
         inf.split_to(waste, eff, self.qw)
 
         biogas.T = inf.T
@@ -374,20 +190,20 @@ class IC(bst.MixTank):
             }
         for k, v in rxn_dct.items():
             X_S = (Si-v[0]) / Si # substrate conversion
-            rxns = self.AD_rxns.copy()
+            rxns = self._get_AD_rxns()
             rxns._X *= X_S
             stream_copy = v[1].copy() # to calculate decay conversion
             rxns(v[1].mol)
             # This is biomass change for mu_max-b
             net_sludge = v[1].imol['WWTsludge'] - stream_copy.imol['WWTsludge']
-            stream_copy.F_mass *= net_sludge/(mu_max-b)*b # the amount undergoes decay
+
+            stream_copy.empty()
+            stream_copy.imol['WWTsludge'] = net_sludge/(mu_max-b)*b # the amount undergoes decay
+
             self.decay_rxn.force_reaction(stream_copy.mol)
             stream_copy.imol['O2'] = 0
             v[1].mix_from((v[1], stream_copy))
-            # For gas production
-            biogas_copy = tmo.Stream()
-            biogas_copy.copy_flow(v[1], ('CH4', 'CO2', 'NH3', 'H2S'), remove=True)
-            biogas.mix_from((biogas, biogas_copy))
+            biogas.receive_vent(v[1], accumulate=True)
 
 
     def _run_separate(self, run_inputs):
@@ -461,13 +277,31 @@ class IC(bst.MixTank):
 
         return St
 
-    #!!! PAUSED, to add more design info
+    _units = {
+        'HRT': 'hr',
+        'SRT': 'hr',
+        'Single reactor liquid volume': 'm3',
+        'Bottom reactor volume': 'm3',
+        'Top reactor volume': 'm3',
+        'Gas chamber volume': 'm3'
+        }
     def _design(self):
-        bst.MixTank._design(self)
-
+        D = self.design_results
+        D['HRT'] = D['Residence time'] = self.HRT
+        D['SRT'] = self.SRT
+        D['Total volume'] = self.Vliq / self.V_wf #!!! if no gas headspace, then change it to Vtot
+        D['Total liquid volume'] = self.Vliq
+        if self.method == 'separate':
+            D['Bottom reactor volume'] = self.Vb
+            D['Top reactor volume'] = self.Vt
 
     def _cost(self):
         bst.MixTank._cost(self)
+
+        inf = self._inf
+        H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=self.T, P=101325)
+        duty = -(inf.H - H_at_T)
+        self.heat_exchanger.simulate_as_auxiliary_exchanger(duty, inf)
 
 
     @property
@@ -577,11 +411,11 @@ class IC(bst.MixTank):
     @BD_dct.setter
     def BD_dct(self, i):
         for k, v in i.items():
-            if v < 0:
-                raise ValueError('Biodegradability should be >=0, '
+            if not 0<=v<=1:
+                raise ValueError('Biodegradability should be within [0, 1], '
                                  f'the input value for chemical "{k}" is '
                                  'outside the range.')
-        self._BD_dct = get_BD_dct(i)
+        self._BD_dct = i
 
     @property
     def Vb(self):
@@ -630,7 +464,7 @@ class IC(bst.MixTank):
         (biogas production and biomass growth).
         '''
         if self._AD_rxns is None:
-            self.refresh_rxns()
+            self._AD_rxns = self._get_AD_rxns()
         return self._AD_rxns
 
     @property
