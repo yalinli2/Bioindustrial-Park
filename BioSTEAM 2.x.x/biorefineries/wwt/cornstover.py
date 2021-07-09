@@ -32,7 +32,6 @@ from biorefineries import (
 from biorefineries.cornstover._process_settings import price
 #!!! Need to enable relative importing
 from _wwt_sys import create_wastewater_treatment_system
-from _utils import get_BD_dct
 
 
 # %%
@@ -43,7 +42,7 @@ from _utils import get_BD_dct
 
 cs.cornstover_sys.simulate()
 temp_sludge = bst.Stream()
-temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0] # from the cornstover biorefinery
+temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol # from the cornstover biorefinery
 
 chems = cs.cornstover.chemicals
 # CSL stream is modeled as 50% water, 25% protein, and 25% lactic acid,
@@ -116,7 +115,7 @@ def create_system(ins, outs, include_blowdown_recycle=False):
     wastewater_treatment_sys = create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater, temp_sludge],
         mockup=True,
-        IC_method='lumped',
+        IC_method='lumped-q_Qw',
         get_flow_tpd=lambda: 2205,
         need_ammonia=False
     )
@@ -149,9 +148,9 @@ cs.load_process_settings()
 cornstover_sys = create_system(include_blowdown_recycle=False)
 u = F.unit
 
-u.R601.CODrm = 1
+# u.R601.organic_rm = 1
 # u.R601.BD_dct = get_BD_dct(0.87)
-u.R601.BD_dct = dict.fromkeys([i.ID for i in chems], 1)
+# u.R601.BD_dct = dict.fromkeys([i.ID for i in chems], 1)
 
 cornstover_sys.simulate()
 

@@ -20,7 +20,7 @@ from biorefineries import cornstover as cs
 
 #!!! Need to enable relative importing
 from _ic import IC
-from _utils import compute_stream_COD
+from _utils import insolubles, compute_stream_COD
 
 _MGD_2_m3hr = auom('gallon').conversion_factor('m3')*1e6/24
 _GPM_2_m3hr = auom('gallon').conversion_factor('m3')*60
@@ -36,9 +36,6 @@ CEPCI = bst.units.design_tools.CEPCI_by_year
 Unit = bst.Unit
 
 __all__ = ('create_wastewater_treatment_system',)
-
-insolubles = ('Tar', 'Lime', 'CaSO4', 'Ash', 'Lignin', 'Z_mobilis', 'T_reesei',
-              'Cellulose', 'Protein', 'Enzyme', 'DenaturedEnzyme', 'WWTsludge')
 
 solubles = tuple(i.ID for i in cs.chemicals if not i.ID in insolubles)
 
@@ -283,8 +280,7 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
 
     #!!! Need to add the recycled sludge
     R601 = IC('R601', ins=(M601-0, recycled_sludge),
-              outs=(biogas, 'IC_eff', 'IC_sludge'),
-              CODrm=0.8, method=IC_method)
+              outs=(biogas, 'IC_eff', 'IC_sludge'), method=IC_method)
 
     R602 = AerobicDigestion('R602',
                             ins=(R601-1, '', caustic_R602,

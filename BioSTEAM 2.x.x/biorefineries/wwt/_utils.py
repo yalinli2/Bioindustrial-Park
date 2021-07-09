@@ -14,7 +14,6 @@ Util functions
 '''
 
 import numpy as np
-from collections import defaultdict
 from chemicals.elements import molecular_weight
 from thermosteam.reaction import (
     Reaction as Rxn,
@@ -30,8 +29,13 @@ __all__ = (
     'get_BD_dct',
     'compute_stream_COD',
     'get_AD_rxns',
-    'IC_purchase_cost_algorithms'
+    'IC_purchase_cost_algorithms',
+    'insolubles'
     )
+
+
+insolubles = ('Tar', 'Lime', 'CaSO4', 'Ash', 'Lignin', 'Z_mobilis', 'T_reesei',
+              'Cellulose', 'Protein', 'Enzyme', 'DenaturedEnzyme', 'WWTsludge')
 
 
 # %%
@@ -65,9 +69,10 @@ def get_COD_stoichiometry(chemical):
     '''
     Xs = nC, nH, nO, nN, nS, nP = get_CHONSP(chemical)
 
-    default_IDs = ('O2', 'CO2', 'H2O', 'NH3', 'H2SO4', 'P4O10')
-    if chemical.ID in default_IDs:
-        return dict.fromkeys(default_IDs, 0)
+    excluded = ('O2', 'CO2', 'H2O', 'NH3', 'H2SO4', 'P4O10',
+                *insolubles)
+    if chemical.ID in excluded:
+        return dict.fromkeys(excluded, 0)
 
     dct = {
         chemical.ID: -1. if sum(Xs)!=0 else 0.,
@@ -110,8 +115,8 @@ def get_BMP_stoichiometry(chemical):
 
 
 # Biodegradability, 0.87 from glucose (treated as the maximum value)
-def get_BD_dct(default_BD=0.87, **kwargs):
-    BD_dct = defaultdict(lambda: default_BD)
+def get_BD_dct(chemicals, default_BD=0.87, **kwargs):
+    BD_dct = dict.fromkeys(chemicals, default_BD)
 
     # Based on Kontos thesis
     BD_dct['AceticAcid'] = 0.87
@@ -125,20 +130,14 @@ def get_BD_dct(default_BD=0.87, **kwargs):
     BD_dct['Xylose'] = 0.8
     BD_dct['XyloseOligomer'] = BD_dct['Xylan'] = 0.75
 
-    # Other assumptions
-    C6_oligomer_to_monomer = BD_dct['GlucoseOligomer'] / BD_dct['Glucose']
-    C5_oligomer_to_monomer = BD_dct['XyloseOligomer'] / BD_dct['Xylose']
-
-    if kwargs: # if user set those biodegradability
-        for i in ('Galactose', 'Mannose', 'Arabinose'):
-            BD_dct[i] = kwargs.get(i) or BD_dct[i]
-
+    # Assume biodegradabilities based on glucose and xylose
+    BD_dct['Galactose'] = BD_dct['Mannose'] = \
+        BD_dct['Arabinose']/BD_dct['Xylose'] * BD_dct['Glucose']
     BD_dct['GalactoseOligomer'] = BD_dct['Galactan'] = \
-        C6_oligomer_to_monomer * BD_dct['Galactose']
-    BD_dct['MannoseOligomer'] = BD_dct['Mannan'] = \
-        C6_oligomer_to_monomer * BD_dct['Mannose']
-    BD_dct['ArabinoseOligomer'] = BD_dct['Arabinan'] = \
-        C5_oligomer_to_monomer * BD_dct['Arabinose']
+        BD_dct['MannoseOligomer'] = BD_dct['Mannan'] = \
+             BD_dct['Glucan']
+
+    BD_dct['ArabinoseOligomer'] = BD_dct['Arabinan'] = BD_dct['Xylan']
 
     if kwargs: # other input biodegradabilities
         BD_dct.update(kwargs)
@@ -146,31 +145,28 @@ def get_BD_dct(default_BD=0.87, **kwargs):
     return BD_dct
 
 
-def compute_stream_COD(stream, BD_dct=None):
+def compute_stream_COD(stream):
     r'''
     Compute the chemical oxygen demand (COD) of a given stream in kg-O2/m3
     by summing the COD of each chemical in the stream using:
 
     .. math::
         COD [\frac{kg}{m^3}] = mol_{chemical} [\frac{kmol}{m^3}] * \frac{g O_2}{mol chemical}
-
-    Can be limited to only biodegradable COD if `BD_dct` is provided.
     '''
     chems = stream.chemicals
     mol = stream.mol
     iCOD = np.array([-get_COD_stoichiometry(i)['O2'] for i in chems])
 
-    # Consider biodegradability
-    if BD_dct:
-        iCOD *= np.array([BD_dct[i.ID] for i in chems])
-
     COD = (mol*iCOD).sum() / stream.F_vol * molecular_weight({'O': 2})
     return COD
 
 
-def get_AD_rxns(stream, BD_dct, X_biogas, X_growth, biomass_ID):
+def get_AD_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
     biomass_MW = getattr(stream.chemicals, biomass_ID).MW
     chems = [i for i in stream.chemicals if i.ID!=biomass_ID]
+    if isinstance(BD, float):
+        BD = dict.fromkeys(chems, BD)
+
     if X_biogas+X_growth > 1:
         raise ValueError(f'Sum of `X_biogas` and `X_biogas` is {X_biogas+X_growth}, '
                          'larger than 100%.')
@@ -178,12 +174,9 @@ def get_AD_rxns(stream, BD_dct, X_biogas, X_growth, biomass_ID):
     biogas_rxns = []
     growth_rxns = []
     for i in chems:
-        X = BD_dct.get(i.ID)
-        if not X: # no entry for the chemical
-            if isinstance(BD_dct, defaultdict): # check if have default value
-                X = BD_dct[i.ID]
-            else:
-                continue # assume is not biodegradable
+        X = BD.get(i.ID)
+        if not X:
+            continue # assume no entry means not biodegradable
 
         iX_biogas = X * X_biogas # the amount of chemical used for biogas production
         iX_growth = X * X_growth # the amount of chemical used for cell growth
@@ -196,8 +189,10 @@ def get_AD_rxns(stream, BD_dct, X_biogas, X_growth, biomass_ID):
                          check_atomic_balance=True)
 
         # Cannot check atom balance since the substrate may not have the atom
+        #!!! Maybe balance this with CSL and some other chemicals
         growth_rxn = Rxn(f'{i.ID} -> {i.MW/biomass_MW}{biomass_ID}',
-                         reactant=i.ID, X=iX_growth, check_atomic_balance=False)
+                         reactant=i.ID, X=iX_growth,
+                         check_atomic_balance=False)
 
         biogas_rxns.append(biogas_rxn)
         growth_rxns.append(growth_rxn)
