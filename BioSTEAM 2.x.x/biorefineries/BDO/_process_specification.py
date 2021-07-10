@@ -162,6 +162,7 @@ class ProcessSpecification(bst.process_tools.ReactorSpecification):
                  'load_spec_2',
                  'load_spec_3',
                  'feedstock',
+                 'evaporator_pump',
                  'dehydration_reactor', 
                  'byproduct_streams',
                  'feedstock_mass',
@@ -186,7 +187,7 @@ class ProcessSpecification(bst.process_tools.ReactorSpecification):
                  'HXN_new_HX_utils',
                  'HXN_Q_bal_percent_error_dict',)
     
-    def __init__(self, evaporator, pump, mixer, heat_exchanger, seed_train_system, 
+    def __init__(self, evaporator, evaporator_pump, pump, mixer, heat_exchanger, seed_train_system, 
                  reactor, reaction_name, substrates, products,
                  spec_1, spec_2, spec_3, xylose_utilization_fraction,
                  feedstock, dehydration_reactor, byproduct_streams, HXN, maximum_inhibitor_concentration=1.,
@@ -195,6 +196,7 @@ class ProcessSpecification(bst.process_tools.ReactorSpecification):
                  HXN_new_HXs={}, HXN_new_HX_utils={}, HXN_Q_bal_percent_error_dict = {},
                  feedstock_mass=104192.83224417375, pretreatment_reactor = None,
                   load_spec_1=None, load_spec_2=None, load_spec_3=None):
+        self.evaporator_pump = evaporator_pump
         self.substrates = substrates
         self.reactor = reactor #: [Unit] Reactor unit operation
         self.products = products #: tuple[str] Names of main products
@@ -233,7 +235,7 @@ class ProcessSpecification(bst.process_tools.ReactorSpecification):
         self.load_spec_3 = load_spec_3
         
         self.titer_inhibitor_specification =\
-            TiterAndInhibitorsSpecification(evaporator, pump, mixer, heat_exchanger,
+            TiterAndInhibitorsSpecification(evaporator, evaporator_pump, pump, mixer, heat_exchanger,
                                             seed_train_system, reactor,
                  target_titer=100, product=reactor.outs[0], maximum_inhibitor_concentration=maximum_inhibitor_concentration)
     
@@ -432,7 +434,7 @@ class ProcessSpecification(bst.process_tools.ReactorSpecification):
         """Return titer in g products / effluent L."""
         reactor = self.reactor
         reactor_effluent = reactor.outs[0]
-        (reactor.specification or reactor._run)()
+        reactor.run()
         effluent = reactor.outs[0]
         F_mass_products = effluent.imass[self.products].sum()
         if F_mass_products: 
@@ -568,13 +570,14 @@ class TiterAndInhibitorsSpecification:
     
     max_sugar_concentration = 600. # g / L
     
-    def __init__(self, evaporator, pump, mixer, heat_exchanger, seed_train_system, reactor, 
+    def __init__(self, evaporator, evaporator_pump, pump, mixer, heat_exchanger, seed_train_system, reactor, 
                  target_titer, product,
                  maximum_inhibitor_concentration=1.,
                  products=('BDO',),
                  sugars = ('Glucose', 'Xylose', 'Arabinose', 'Sucrose'),
                  inhibitors = ('AceticAcid', 'HMF', 'Furfural'),):
         self.evaporator = evaporator
+        self.evaporator_pump = evaporator_pump
         self.pump = pump
         self.mixer = mixer
         self.heat_exchanger = heat_exchanger
@@ -607,17 +610,16 @@ class TiterAndInhibitorsSpecification:
     
     def run_units(self):
         self.evaporator._run()
-        self.pump._run()
+        self.evaporator_pump._run()
         self.mixer._run()
         self.heat_exchanger._run()
+        self.pump._run()
         self.seed_train_system._converge()
         self.reactor._run()
     
     def calculate_titer(self):
-        # product = self.product
-        # return product.imass[self.products].sum() / product.F_vol
-        # return compute_BDO_titer(self.product)
-        return self.reactor.effluent_titer
+        product = self.product
+        return product.imass[self.products].sum() / product.F_vol
     
     def calculate_inhibitors(self): # g / L
         product = self.product
@@ -652,7 +654,7 @@ class TiterAndInhibitorsSpecification:
         # V_min = 0.00001
         V_min = 0.
         V_max = 0.9999
-        
+        # breakpoint()
         if x_titer < self.target_titer: # Evaporate
             self.evaporator.V = V_min = flx.IQ_interpolation(self.titer_objective_function,
                                                              V_min, V_max, ytol=1e-3, maxiter=200) 
@@ -672,7 +674,8 @@ class TiterAndInhibitorsSpecification:
             
             if y_0 > 0.:
                 self.evaporator.V = flx.IQ_interpolation(obj_f,
-                                                     V_min, V_max, y0 = y_0, ytol=1e-3, maxiter=200) 
+                    V_min, V_max, y0 = y_0, ytol=1e-2, maxiter=100,
+                ) 
         
         # self.check_sugar_concentration()
     
@@ -681,7 +684,8 @@ class TiterAndInhibitorsSpecification:
         water = self.water_required_to_dilute_to_set_titer(x_titer)
         product = self.product
         molar_volume = product.chemicals.Water.V('l', product.T, product.P) # m3 / mol
-        self.dilution_water.imol['Water'] += water / molar_volume / 1000.
+        new_water = water / molar_volume / 1000.
+        self.dilution_water.imol['Water'] = self.dilution_water.imol['Water'] + new_water
         
     def water_required_to_dilute_to_set_titer(self, current_titer):
         return (1./self.target_titer - 1./current_titer) * self.product.imass[self.products].sum()

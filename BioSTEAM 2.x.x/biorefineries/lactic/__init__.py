@@ -5,8 +5,8 @@
 # Bioindustrial-Park: BioSTEAM's Premier Biorefinery Models and Results
 # Copyright (C) 2020-2021, Yalin Li <yalinli2@illinois.edu>,
 # Sarang Bhagwat <sarangb2@illinois.edu>, and Yoel Cortes-Pena (this biorefinery)
-# 
-# This module is under the UIUC open-source license. See 
+#
+# This module is under the UIUC open-source license. See
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
@@ -34,8 +34,6 @@ from ._processes import update_settings
 from .systems import *
 from .models import *
 
-getattr = getattr
-
 def load_system(kind='SSCF'):
     if not kind in ('SSCF', 'SHF'):
         raise ValueError(f'kind can only be "SSCF" or "SHF", not {kind}.')
@@ -43,12 +41,12 @@ def load_system(kind='SSCF'):
         lactic_sys, lactic_tea, feedstock, lactic_acid, \
         simulate_and_print, simulate_fermentation_improvement, \
         simulate_separation_improvement, simulate_operating_improvement
-    
+
     flowsheet = getattr(systems, f'{kind}_flowsheet')
     groups = getattr(systems, f'{kind}_groups')
     teas = getattr(systems, f'{kind}_teas')
     funcs = getattr(systems, f'{kind}_funcs')
-    
+
     update_settings(chems)
     bst.main_flowsheet.set_flowsheet(flowsheet)
 
@@ -64,5 +62,5 @@ def load_system(kind='SSCF'):
         lambda: systems.simulate_separation_improvement(kind)
     simulate_operating_improvement = \
         lambda: systems.simulate_operating_improvement(kind)
-    
+
 load_system('SSCF')
