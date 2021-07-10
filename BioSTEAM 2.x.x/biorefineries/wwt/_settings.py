@@ -11,13 +11,22 @@
 
 '''
 Settings for cornstover (cs), sugarcane (sc), and lipidcane (lc) biorefineries.
+
+References
+----------
+[1] Hossain et al. Techno-Economic Evaluation of Heat Integrated
+Second Generation Bioethanol and Furfural Coproduction.
+Biochemical Engineering Journal 2019, 144, 89–103.
+https://doi.org/10.1016/j.bej.2019.01.017.
+
 '''
 
 __all__ = (
-    'cs_price', 'load_cs_settings',
+    'price', 'load_cs_settings',
     'load_sc_settings'
     )
 
+from biorefineries import cornstover as cs
 from biorefineries.cornstover._process_settings import (
     price as cs_price,
     load_process_settings as load_cs_settings,
@@ -25,3 +34,7 @@ from biorefineries.cornstover._process_settings import (
 
 from biorefineries.sugarcane._process_settings import \
     load_process_settings as load_sc_settings
+
+price = cs_price.copy()
+price['Caustics'] = cs.caustic.price
+price['Wastewater'] = -0.03 # ref [1], negative value for cost from product

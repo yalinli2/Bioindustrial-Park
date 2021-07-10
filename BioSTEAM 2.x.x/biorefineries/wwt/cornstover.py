@@ -12,18 +12,6 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
-'''
-TODO:
-	- IC
-        - Sludge recycling (ins[1])
-        - C/N ratio, George's analysis shows it's very high
-            - About 16, looks good
-        - Consider sulfate and sulfide
-        - Check with Brian's AnMBR paper and see the COD<1300 mg/L not preferable thing
-    - Aerobic treatment
-        - If need ammonia for NREL system
-        - Joy helping with transferring Brian's codes
-'''
 
 import biosteam as bst
 from biosteam import main_flowsheet as F
@@ -34,6 +22,7 @@ from biorefineries import (
 
 #!!! Need to enable relative importing
 from _chemicals import create_cs_chemicals
+from _utils import kph_to_tpd, get_MESP
 from _settings import cs_price, load_cs_settings
 from _wwt_sys import create_wastewater_treatment_system
 
@@ -41,15 +30,13 @@ from _wwt_sys import create_wastewater_treatment_system
 # %%
 
 # =============================================================================
-# Function for making the system
+# Function to make the system
 # =============================================================================
 
 load_cs_settings()
 chems = create_cs_chemicals()
 bst.settings.set_thermo(chems)
-temp_sludge = bst.Stream()
-# Copied from the cornstover biorefinery
-temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol
+
 
 @bst.SystemFactory(
     ID='cornstover_sys',
@@ -60,7 +47,7 @@ temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol
     outs=[dict(ID='ethanol',
                 price=cs_price['Ethanol'])],
 )
-def create_system(ins, outs, include_blowdown_recycle=False):
+def create_cs_system(ins, outs, include_blowdown_recycle=False):
     feedstock, denaturant = ins
     ethanol, = outs
     f = bst.main_flowsheet
@@ -108,11 +95,10 @@ def create_system(ins, outs, include_blowdown_recycle=False):
     else:
         blowdown_to_wastewater = None
     wastewater_treatment_sys = create_wastewater_treatment_system(
-        # ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater, temp_sludge],
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
         mockup=True,
         IC_method='lumped',
-        get_flow_tpd=lambda: 2205,
+        dry_flow_tpd=kph_to_tpd(s.cornstover),
         need_ammonia=False
     )
     M501 = bst.Mixer('M501', (u.S604-1, S401-0))
@@ -139,9 +125,7 @@ def create_system(ins, outs, include_blowdown_recycle=False):
 
 flowsheet = bst.Flowsheet('wwt_cornstover')
 F.set_flowsheet(flowsheet)
-bst.settings.set_thermo(chems)
-cs.load_process_settings()
-cornstover_sys = create_system(include_blowdown_recycle=False)
+cornstover_sys = create_cs_system(include_blowdown_recycle=False)
 u = F.unit
 
 cornstover_sys.simulate()
@@ -153,27 +137,9 @@ OSBL_units = (*WWT_units, u.CWP, u.CT, u.PWC, u.ADP,
 cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
 ethanol = F.stream.ethanol
 
+# Compare MESP
+MESP_old = get_MESP(cs.ethanol, cs.cornstover_tea, 'old cs sys')
+MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 
-# %%
-
-# =============================================================================
-# Util functions
-# =============================================================================
-
-def get_MESP():
-    ethanol.price = cornstover_tea.solve_price(ethanol)
-    ethanol_price_gal = ethanol.price * cs.ethanol_density_kggal
-    print(f'MESP is ${ethanol_price_gal:.2f}/gal.')
-
-get_MESP()
-
-
-def get_CN_ratio(stream):
-    C = sum([(i.atoms.get('C') or 0.)*12*stream.imol[i.ID]
-             for i in stream.chemicals if i.formula])
-    N = sum([(i.atoms.get('N') or 0.)*14*stream.imol[i.ID]
-             for i in stream.chemicals if i.formula])
-
-    return C/N if N !=0 else 'NA'
-
-R601_CN = get_CN_ratio(u.R601._inf)
+# from _utils import get_CN_ratio
+# R601_CN = get_CN_ratio(u.R601._inf)

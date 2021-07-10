@@ -14,7 +14,9 @@ Util functions
 '''
 
 import numpy as np
+import biosteam as bst
 from chemicals.elements import molecular_weight
+from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 from thermosteam.reaction import (
     Reaction as Rxn,
     ParallelReaction as PRxn
@@ -28,15 +30,20 @@ from biosteam.units.design_tools.tank_design import (
     mix_tank_purchase_cost_algorithms,
     TankPurchaseCostAlgorithm
     )
+from biorefineries.cornstover import ethanol_density_kggal
 from _chemicals import default_insolubles
 
 __all__ = (
+    'auom',
     'get_BD_dct',
     'compute_stream_COD',
+    'get_CN_ratio',
     'get_digestion_rxns',
     'IC_purchase_cost_algorithms',
     'get_MB_split',
-    # 'remove_undefined_chemicals',
+    'kph_to_tpd',
+    'ethanol_density_kggal',
+    'get_MESP',
     )
 
 
@@ -161,6 +168,15 @@ def compute_stream_COD(stream):
     return COD
 
 
+def get_CN_ratio(stream):
+    C = sum([(i.atoms.get('C') or 0.)*12*stream.imol[i.ID]
+             for i in stream.chemicals if i.formula])
+    N = sum([(i.atoms.get('N') or 0.)*14*stream.imol[i.ID]
+             for i in stream.chemicals if i.formula])
+
+    return C/N if N !=0 else 'NA'
+
+
 def get_digestion_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
     biomass_MW = getattr(stream.chemicals, biomass_ID).MW
     chems = [i for i in stream.chemicals if i.ID!=biomass_ID]
@@ -222,8 +238,6 @@ ic = TankPurchaseCostAlgorithm(
 IC_purchase_cost_algorithms['IC'] = ic
 
 
-# %%
-
 # Split for the membrane bioreactor
 def get_MB_split(chemicals, split_dct=None):
     # Copied from the cornstover biorefinery,
@@ -269,3 +283,18 @@ def get_MB_split(chemicals, split_dct=None):
         split.update(split_dct)
 
     return split
+
+
+def get_MESP(ethanol, tea, tea_name):
+    bst.settings.set_thermo(ethanol.chemicals)
+    tea.system.simulate()
+    ethanol.price = tea.solve_price(ethanol)
+    ethanol_price_gal = ethanol.price * ethanol_density_kggal
+    print(f'MESP of {tea_name} is ${ethanol_price_gal:.2f}/gal.')
+    return ethanol_price_gal
+
+
+def kph_to_tpd(stream):
+    dry_mass = stream.F_mass - stream.imass['Water']
+    factor = auom('kg').conversion_factor('ton')/auom('hr').conversion_factor('day')
+    return dry_mass*factor

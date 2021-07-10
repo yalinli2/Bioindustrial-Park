@@ -9,6 +9,16 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
+
+'''
+TODO:
+    - Sludge recycling ratio, now assuming 0.1
+    - C/N ratio, George's analysis shows it's very high
+        - About 16, looks good
+    - Consider sulfate and sulfide
+    - Check with Brian's AnMBR paper and see the COD<1300 mg/L not preferable thing
+'''
+
 import sympy as sp
 import biosteam as bst
 import thermosteam as tmo
@@ -84,6 +94,11 @@ class IC(bst.MixTank):
         caused by the rising force of the generated biogas.
     T : float
         Temperature of the reactor.
+    recycle_ratio : float
+        Fraction of the waste sludge will be recycled.
+
+        .. note ::
+            This will be passed on to the splitter unit immediately after IC.
     kwargs : dict
         Other keyword arguments (e.g., Fxb, Fxt).
 
@@ -126,7 +141,8 @@ class IC(bst.MixTank):
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  method='lumped-Xw', OLRall=1.25, biodegradability={}, Y=0.07,
                  vessel_type='IC', vessel_material='Stainless steel',
-                 V_wf=0.8, kW_per_m3=0., T=35+273.15, **kwargs):
+                 V_wf=0.8, kW_per_m3=0., T=35+273.15,
+                 recycle_ratio=0.1, **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.method = method
         self.OLRall = OLRall
@@ -138,6 +154,7 @@ class IC(bst.MixTank):
         self.vessel_material = vessel_material
         self.kW_per_m3 = kW_per_m3
         self.T = T
+        self.recycle_ratio = 0.1
 
         # Initiate the attributes
         self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
@@ -164,11 +181,6 @@ class IC(bst.MixTank):
         inf.mix_from(self.ins)
         self._inf = inf.copy()
         biogas, eff, waste  = self.outs
-
-        #!!! This should be updated with proper recycling
-        #!!! PAUSED, SEE WHAT IF RECYCLE 0.1 OR SO THE WASTE
-        # if waste.imass['WWTsluge'] == 0:
-
 
         # Initiate the streams
         biogas.T = eff.T = waste.T = self.T
@@ -288,7 +300,7 @@ class IC(bst.MixTank):
         D = self.design_results
         D['HRT'] = D['Residence time'] = self.HRT
         D['SRT'] = self.SRT
-        D['Total volume'] = self.Vliq / self.V_wf #!!! if no gas headspace, then change it to Vtot
+        D['Total volume'] = self.Vtot
         D['Total liquid volume'] = self.Vliq
         if self.method == 'separate':
             D['Bottom reactor volume'] = self.Vb
@@ -538,10 +550,17 @@ class IC(bst.MixTank):
     @property
     def Vliq(self):
         '''
-        [float] Total volume of the liquid
-        (gas headspace not included), [m3].
+        [float] Total volume of the liquid, not considering gas headspace
+        and `V_wf`, [m3].
         '''
         return self.Qi*self.Si / self.OLRall
+
+    @property
+    def Vtot(self):
+        '''
+        [float] Total volume considering `V_wf`, [m3].
+        '''
+        return self.Vliq / self.V_wf
 
     @property
     def HRT(self):

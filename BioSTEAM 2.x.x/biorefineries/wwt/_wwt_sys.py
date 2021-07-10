@@ -36,18 +36,17 @@ import thermosteam as tmo
 import biosteam as bst
 from biosteam.units.decorators import cost
 from thermosteam import Stream, separations
-from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
-from biorefineries import cornstover as cs
 
 #!!! Need to enable relative importing
 from _chemicals import default_insolubles, get_insoluble_IDs, get_soluble_IDs
 from _utils import (
-    compute_stream_COD,
+    auom,
     get_BD_dct,
+    compute_stream_COD,
     get_digestion_rxns,
     get_MB_split,
-    # remove_undefined_chemicals,
     )
+from _settings import price
 from _ic import IC
 
 _MGD_2_m3hr = auom('gallon').conversion_factor('m3')*1e6/24
@@ -282,14 +281,14 @@ class ReverseOsmosis(Unit):
 
 
 def create_wastewater_treatment_units(ins, outs, IC_method,
-                                      get_flow_tpd, need_ammonia):
+                                      dry_flow_tpd, need_ammonia):
     # wwt_streams, recycled_sludge = ins[:-1], ins[-1]
     wwt_streams = ins
     biogas, vent_R602, S604_CHP, recycled_water, brine = outs
     vent_R602.phase = 'g'
 
     ammonia_R602 = Stream('ammonia_R602', units='kg/hr')
-    caustic_R602 = Stream('caustic_R602', units='kg/hr', price=cs.caustic.price)
+    caustic_R602 = Stream('caustic_R602', units='kg/hr', price=price['Caustics'])
     polymer_R602 = Stream('polymer_R602', units='kg/hr',
                            price=polymer_pirce
                           )
@@ -299,20 +298,18 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     # Mix waste liquids for treatment
     M601 = bst.units.Mixer('M601', ins=wwt_streams)
 
-    #!!! Need to add the recycled sludge
-    # R601 = IC('R601', ins=(M601-0, recycled_sludge),
-    R601 = IC('R601', ins=(M601-0, ''),
+    R601 = IC('R601', ins=(M601-0, 'recycled_sludge'),
               outs=(biogas, 'IC_eff', 'IC_sludge'), method=IC_method)
-    R601_S = bst.units.Splitter('R601_S', ins=R601.outs[2],
+    R601_S = bst.units.Splitter('R601_S', ins=R601-2,
                                 outs=('recycled_AD_sludge', 'wasted_AD_sludge'),
-                                split=0.1)
+                                split=R601.recycle_ratio)
     R601_S-0-1-R601
 
     R602 = AerobicDigestion('R602',
                             ins=(R601-1, '', caustic_R602,
                                  ammonia_R602, polymer_R602, air_R602),
                                  outs=(vent_R602, 'aerobic_treated_water'),
-                                 caustic_mass=2252*get_flow_tpd()/2205,
+                                 caustic_mass=2252*dry_flow_tpd/2205,
                                  need_ammonia=need_ammonia)
 
     # Membrane bioreactor to split treated wastewater from R602
@@ -343,7 +340,6 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
 
     # Reverse osmosis to treat membrane separated water
     S605 = ReverseOsmosis('S605', ins=S601-0, outs=(recycled_water, brine))
-
 
 
 create_wastewater_treatment_system = bst.SystemFactory(
