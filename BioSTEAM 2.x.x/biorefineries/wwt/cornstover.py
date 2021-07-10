@@ -14,13 +14,15 @@
 
 '''
 TODO:
-	IC:
-        C/N ratio, George's analysis shows it's very high
-        Consider sulfate and sulfide
-        Check with Brian's AnMBR paper and see the COD<1300 mg/L not preferable thing
-    Aerobic treatment:
-        If need ammonia for NREL system
-        Joy helping with transferring Brian's codes
+	- IC
+        - Sludge recycling (ins[1])
+        - C/N ratio, George's analysis shows it's very high
+            - About 16, looks good
+        - Consider sulfate and sulfide
+        - Check with Brian's AnMBR paper and see the COD<1300 mg/L not preferable thing
+    - Aerobic treatment
+        - If need ammonia for NREL system
+        - Joy helping with transferring Brian's codes
 '''
 
 import biosteam as bst
@@ -29,9 +31,10 @@ from biorefineries import (
     cornstover as cs,
     sugarcane as sc
     )
-from biorefineries.cornstover._process_settings import price
+
 #!!! Need to enable relative importing
 from _chemicals import create_cs_chemicals
+from _settings import cs_price, load_cs_settings
 from _wwt_sys import create_wastewater_treatment_system
 
 
@@ -41,8 +44,7 @@ from _wwt_sys import create_wastewater_treatment_system
 # Function for making the system
 # =============================================================================
 
-cs.cornstover_sys.simulate()
-
+load_cs_settings()
 chems = create_cs_chemicals()
 bst.settings.set_thermo(chems)
 temp_sludge = bst.Stream()
@@ -54,9 +56,9 @@ temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol
     ins=[*cs.create_dilute_acid_pretreatment_system.ins,
           dict(ID='denaturant',
               Octane=1,
-              price=price['Denaturant'])],
+              price=cs_price['Denaturant'])],
     outs=[dict(ID='ethanol',
-                price=price['Ethanol'])],
+                price=cs_price['Ethanol'])],
 )
 def create_system(ins, outs, include_blowdown_recycle=False):
     feedstock, denaturant = ins
@@ -106,7 +108,8 @@ def create_system(ins, outs, include_blowdown_recycle=False):
     else:
         blowdown_to_wastewater = None
     wastewater_treatment_sys = create_wastewater_treatment_system(
-        ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater, temp_sludge],
+        # ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater, temp_sludge],
+        ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
         mockup=True,
         IC_method='lumped',
         get_flow_tpd=lambda: 2205,
@@ -150,6 +153,13 @@ OSBL_units = (*WWT_units, u.CWP, u.CT, u.PWC, u.ADP,
 cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
 ethanol = F.stream.ethanol
 
+
+# %%
+
+# =============================================================================
+# Util functions
+# =============================================================================
+
 def get_MESP():
     ethanol.price = cornstover_tea.solve_price(ethanol)
     ethanol_price_gal = ethanol.price * cs.ethanol_density_kggal
@@ -157,22 +167,13 @@ def get_MESP():
 
 get_MESP()
 
-# UnitGroup = bst.process_tools.UnitGroup
-# Area100 = UnitGroup('Area 100', (u.U101,))
-# Area200 = UnitGroup('Area 200', (u.T201, u.M201, u.R201, u.P201, u.P202,
-#                                 u.T202, u.F201, u.H201, u.T203, u.M205))
-# Area300 = UnitGroup('Area 300', (u.H301, u.M301, u.R301,
-#                                  u.R302, u.R303, u.T301, u.T302))
-# Area400 = UnitGroup('Area 400', (u.D401, u.H401, u.D402, u.P401,
-#                                 u.M402, u.D403, u.P402, u.H402,
-#                                 u.U401, u.H403, u.M701, u.S401,
-#                                 u.P403))
-# Area500 = UnitGroup('Area 500', WWT_units)
-# Area600 = UnitGroup('Area 600', (u.T701, u.T702, u.P701, u.P702, u.M701, u.FT,
-#                                  u.CSL_storage, u.DAP_storage, u.T703,
-#                                  u.Ammonia_storage, u.H2SO4_storage))
-# Area700 = UnitGroup('Area 700', (u.BT,))
-# Area800 = UnitGroup('Area 800', (u.CWP, u.CT, u.PWC, u.ADP, u.CIP_package))
-# areas = (Area100, Area200, Area300, Area400,
-#          Area500, Area600, Area700, Area800)
-# AllAreas = UnitGroup('All Areas', cornstover_sys.units)
+
+def get_CN_ratio(stream):
+    C = sum([(i.atoms.get('C') or 0.)*12*stream.imol[i.ID]
+             for i in stream.chemicals if i.formula])
+    N = sum([(i.atoms.get('N') or 0.)*14*stream.imol[i.ID]
+             for i in stream.chemicals if i.formula])
+
+    return C/N if N !=0 else 'NA'
+
+R601_CN = get_CN_ratio(u.R601._inf)

@@ -10,15 +10,18 @@
 # for license details.
 
 '''
-Biorefinery settings.
+Settings for cornstover (cs), sugarcane (sc), and lipidcane (lc) biorefineries.
 '''
 
 __all__ = (
     'cs_price', 'load_cs_settings',
+    'load_sc_settings'
     )
-
 
 from biorefineries.cornstover._process_settings import (
     price as cs_price,
     load_process_settings as load_cs_settings,
     )
+
+from biorefineries.sugarcane._process_settings import \
+    load_process_settings as load_sc_settings

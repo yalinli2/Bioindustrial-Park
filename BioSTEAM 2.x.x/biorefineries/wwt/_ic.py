@@ -165,6 +165,11 @@ class IC(bst.MixTank):
         self._inf = inf.copy()
         biogas, eff, waste  = self.outs
 
+        #!!! This should be updated with proper recycling
+        #!!! PAUSED, SEE WHAT IF RECYCLE 0.1 OR SO THE WASTE
+        # if waste.imass['WWTsluge'] == 0:
+
+
         # Initiate the streams
         biogas.T = eff.T = waste.T = self.T
         biogas.phase = 'g'

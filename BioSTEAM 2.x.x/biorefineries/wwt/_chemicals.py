@@ -24,15 +24,27 @@ import thermosteam as tmo
 from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 
 __all__ = (
-    'insolubles',
-    'get_soluble_ID',
+    'default_insolubles',
+    'get_insoluble_IDs',
+    'get_soluble_IDs',
     'create_cs_chemicals',
     )
 
-insolubles = ('Tar', 'Lime', 'CaSO4', 'Ash', 'Lignin', 'Z_mobilis', 'T_reesei',
-              'Cellulose', 'Protein', 'Enzyme', 'DenaturedEnzyme', 'WWTsludge')
+default_insolubles = (
+    # Cornstover biorefinery
+    'Lime', 'CaSO4', 'Ash', 'P4O10',
+    'Tar', 'Lignin', 'Cellulose', 'Hemicellulose',
+    'Protein', 'Enzyme', 'DenaturedEnzyme', 'Z_mobilis', 'T_reesei', 'WWTsludge',
+    # Sugarcane biorefinery
+    'Yeast', 'CaO', 'Solids', 'Flocculant'
+    )
 
-def get_soluble_ID(chemicals, insolubles):
+def get_insoluble_IDs(chemicals, insolubles):
+    chem_IDs = set([i.ID for i in chemicals])
+    new_insolubles = set(insolubles).intersection(chem_IDs)
+    return tuple(new_insolubles)
+
+def get_soluble_IDs(chemicals, insolubles):
     return tuple(i.ID for i in chemicals if not i.ID in insolubles)
 
 
@@ -77,9 +89,6 @@ def add_wwt_chemicals(chemicals):
     return chems
 
 
-
-# %%
-
 # For the cornstover biorefinery
 def create_cs_chemicals():
     '''
@@ -89,5 +98,18 @@ def create_cs_chemicals():
     from biorefineries.cornstover import create_chemicals
     cs_chems = create_chemicals()
     new_chems = add_wwt_chemicals(cs_chems)
+
+    return new_chems
+
+
+# For the sugarcane biorefinery
+def create_sc_chemicals():
+    '''
+    Create compiled chemicals for the sugarcane biorefinery with the new
+    wastewater treatment process.
+    '''
+    from biorefineries.sugarcane import create_chemicals
+    sc_chems = create_chemicals()
+    new_chems = add_wwt_chemicals(sc_chems)
 
     return new_chems

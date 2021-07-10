@@ -28,7 +28,7 @@ from biosteam.units.design_tools.tank_design import (
     mix_tank_purchase_cost_algorithms,
     TankPurchaseCostAlgorithm
     )
-from _chemicals import insolubles
+from _chemicals import default_insolubles
 
 __all__ = (
     'get_BD_dct',
@@ -36,6 +36,7 @@ __all__ = (
     'get_digestion_rxns',
     'IC_purchase_cost_algorithms',
     'get_MB_split',
+    # 'remove_undefined_chemicals',
     )
 
 
@@ -69,7 +70,7 @@ def get_COD_stoichiometry(chemical):
     Xs = nC, nH, nO, nN, nS, nP = get_CHONSP(chemical)
 
     excluded = ('O2', 'CO2', 'H2O', 'NH3', 'H2SO4', 'P4O10',
-                *insolubles)
+                *default_insolubles)
     if chemical.ID in excluded:
         return dict.fromkeys(excluded, 0)
 

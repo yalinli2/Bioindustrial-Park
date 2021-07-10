@@ -12,6 +12,18 @@
 '''
 Unit construction and functions for creating wastewwater treatment system.
 
+References
+----------
+[1] Humbird et al., Process Design and Economics for Biochemical Conversion of
+    Lignocellulosic Biomass to Ethanol: Dilute-Acid Pretreatment and Enzymatic
+    Hydrolysis of Corn Stover; Technical Report NREL/TP-5100-47764;
+    National Renewable Energy Lab (NREL), 2011.
+    https://www.nrel.gov/docs/fy11osti/47764.pdf
+[2] Davis et al., Process Design and Economics for the Conversion of Lignocellulosic
+    Biomass to Hydrocarbon Fuels and Coproducts: 2018 Biochemical Design Case Update;
+    NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
+    https://doi.org/10.2172/1483234
+
 TODO:
     AerobicDigestion and MembraneBioreactor will be replaced by
     an anaerobic membrane bioresactor (AnMBR).
@@ -28,8 +40,14 @@ from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 from biorefineries import cornstover as cs
 
 #!!! Need to enable relative importing
-from _chemicals import insolubles, get_soluble_ID
-from _utils import compute_stream_COD, get_BD_dct, get_digestion_rxns, get_MB_split
+from _chemicals import default_insolubles, get_insoluble_IDs, get_soluble_IDs
+from _utils import (
+    compute_stream_COD,
+    get_BD_dct,
+    get_digestion_rxns,
+    get_MB_split,
+    # remove_undefined_chemicals,
+    )
 from _ic import IC
 
 _MGD_2_m3hr = auom('gallon').conversion_factor('m3')*1e6/24
@@ -74,11 +92,6 @@ class AerobicDigestion(Unit):
         Unit.__init__(self, ID, ins, outs, thermo)
         self.caustic_mass = caustic_mass
         self.need_ammonia = need_ammonia
-
-        # chems = self.chemicals
-        # def growth(reactant):
-        #     f = chems.WWTsludge.MW / getattr(chems, reactant).MW
-        #     return Rxn(f"{f}{reactant} -> WWTsludge", reactant, 1.)
 
         # Reactions from auto-populated combustion reactions.
         # Based on P49 in ref [1], 96% of remaining soluble organic matter
@@ -184,14 +197,14 @@ class BeltThickener(Unit):
     _units= {'COD flow': 'kg-O2/hr'}
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None,
-                 insolubles=insolubles):
+                 insolubles=default_insolubles):
         Unit.__init__(self, ID, ins, outs, thermo)
-        self.insolubles = insolubles
+        self.insolubles = get_insoluble_IDs(self.chemicals, insolubles)
 
     def _run(self):
         centrate, solids = self.outs
         insolubles = self.insolubles
-        solubles = get_soluble_ID(self.chemicals, insolubles)
+        solubles = get_soluble_IDs(self.chemicals, insolubles)
 
         influent = self.ins[0].copy()
         influent.mix_from(self.ins)
@@ -228,7 +241,7 @@ class SludgeCentrifuge(Unit):
         centrate, solids = self.outs
         centrate.T = solids.T = influent.T
         insolubles = self.insolubles
-        solubles = get_soluble_ID(self.chemicals, insolubles)
+        solubles = get_soluble_IDs(self.chemicals, insolubles)
 
         # Centrifuge captures 95% of the solids at 20% solids
         solids.imass[insolubles] = 0.95 * influent.imass[insolubles]
@@ -270,7 +283,8 @@ class ReverseOsmosis(Unit):
 
 def create_wastewater_treatment_units(ins, outs, IC_method,
                                       get_flow_tpd, need_ammonia):
-    wwt_streams, recycled_sludge = ins[:-1], ins[-1]
+    # wwt_streams, recycled_sludge = ins[:-1], ins[-1]
+    wwt_streams = ins
     biogas, vent_R602, S604_CHP, recycled_water, brine = outs
     vent_R602.phase = 'g'
 
@@ -286,8 +300,13 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     M601 = bst.units.Mixer('M601', ins=wwt_streams)
 
     #!!! Need to add the recycled sludge
-    R601 = IC('R601', ins=(M601-0, recycled_sludge),
+    # R601 = IC('R601', ins=(M601-0, recycled_sludge),
+    R601 = IC('R601', ins=(M601-0, ''),
               outs=(biogas, 'IC_eff', 'IC_sludge'), method=IC_method)
+    R601_S = bst.units.Splitter('R601_S', ins=R601.outs[2],
+                                outs=('recycled_AD_sludge', 'wasted_AD_sludge'),
+                                split=0.1)
+    R601_S-0-1-R601
 
     R602 = AerobicDigestion('R602',
                             ins=(R601-1, '', caustic_R602,
@@ -305,16 +324,15 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     S602 = bst.units.Splitter('S602', ins=S601-1, outs=('to_aerobic_digestion', ''),
                               split=0.96)
 
-    S603 = BeltThickener('S603', ins=(R601-2, S602-1),
-                         outs=('S603_centrate', 'S603_solids'),
-                         insolubles=insolubles)
+    # S603 = BeltThickener('S603', ins=(R601-2, S602-1),
+    S603 = BeltThickener('S603', ins=(R601_S-1, S602-1),
+                         outs=('S603_centrate', 'S603_solids'))
 
     # Sludge centrifuge to separate water (centrate) from sludge
     # Ref [1] included polymer addition in process flow diagram, but did not include
     # in the variable operating cost, thus followed ref [4] to add polymer in AerobicDigestion
     S604 = SludgeCentrifuge('S604', ins=S603-1,
-                            outs=('S604_centrate', S604_CHP),
-                            insolubles=insolubles)
+                            outs=('S604_centrate', S604_CHP))
 
     # Mix recycles to aerobic digestion
     M602 = bst.units.Mixer('M602', ins=(S602-0, S603-0, S604-0), outs=1-R602)
