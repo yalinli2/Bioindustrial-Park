@@ -13,17 +13,23 @@ import biosteam as bst
 bst.speed_up()
 
 from . import (
+    _chemicals,
     _utils,
+    _settings,
     _ic,
     _wwt_sys,
     )
 
+from _chemicals import *
 from _utils import *
+from _settings import *
 from _ic import *
 from _wwt_sys import *
 
 __all__ = (
+    *_chemicals.__all__,
     *_utils.__all__,
+    *_settings.__all__,
     *_ic.__all__,
     *_wwt_sys.__all__,
     )

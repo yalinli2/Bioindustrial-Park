@@ -10,7 +10,6 @@
 # for license details.
 
 import sympy as sp
-import flexsolve as flx
 import biosteam as bst
 import thermosteam as tmo
 from biosteam.exceptions import DesignError
@@ -18,7 +17,7 @@ from biosteam.exceptions import DesignError
 from _utils import (
     get_BD_dct,
     compute_stream_COD,
-    get_AD_rxns,
+    get_digestion_rxns,
     IC_purchase_cost_algorithms
     )
 
@@ -52,10 +51,10 @@ class IC(bst.MixTank):
         or "lumped" to design the entire IC reactor as a black box following [3]_.
 
         In "separate" method, design parameters include:
-            - OLRall, biodegradability, Y, q_Qw, mu_max, b, Fxt, Fxb
+            - OLRall, biodegradability, Y, q_Qw, mu_max, b, Fxt, and Fxb
 
         In "lumped" method, design parameters include:
-            - OLRall, biodegradability, Y, q_Qw ("lumped-q_Qw") or q_Xw ("lumped-q_Xw")
+            - OLRall, biodegradability, Y, q_Qw, and q_Xw
     OLRall : float
         Overall organic loading rate, [kg COD/m3/hr].
     biodegradability : dict
@@ -143,7 +142,7 @@ class IC(bst.MixTank):
         # Initiate the attributes
         self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
         self.heat_utilities = hx.heat_utilities
-        self._AD_rxns = None
+        self._digestion_rxns = None
 
         # Note that the reaction conversion need to be adjusted when using
         self._decay_rxn = self.chemicals.WWTsludge.get_combustion_reaction()
@@ -152,10 +151,10 @@ class IC(bst.MixTank):
             setattr(self, k, v)
 
 
-    def get_AD_rxns(self):
+    def get_digestion_rxns(self):
         '''Refresh the auto-generated biogas and growth reactions.'''
-        rxns = get_AD_rxns(self.ins[0], self.biodegradability,
-                           1-self.Y, self.Y, 'WWTsludge')
+        rxns = get_digestion_rxns(self.ins[0], self.biodegradability,
+                                  1-self.Y, self.Y, 'WWTsludge')
         self._i_rm = rxns.X_net.data
         return rxns
 
@@ -171,26 +170,16 @@ class IC(bst.MixTank):
         biogas.phase = 'g'
         biogas.empty()
 
-        method = self.method.lower()
-        if method == 'lumped-q_xw':
-            self.q_Qw = flx.IQ_interpolation(
-                f=self._q_Qw_obj_func,
-                x0=0., x1=1., xtol=1e-5, ytol=1e-5,
-                checkbounds=False)
-
-        breakpoint()
-        Qi, Si, Xi, Y, Qw = self.Qi, self.Si, self.Xi, self.Y, self.Qw
-
         inf.split_to(waste, eff, self.q_Qw)
-        AD_rxns = self.AD_rxns
-        AD_rxns(inf.mol)
+        digestion_rxns = self.digestion_rxns
+        digestion_rxns(inf.mol)
+        Se = compute_stream_COD(inf)
 
-
-
+        method = self.method.lower()
         if method == 'separate':
-            run_inputs = (Qi, Si, Xi, self.Vliq, Y, Qw,
-                          self.mu_max, self.b, self.Fxb, self.Fxt)
-            Xb, Xe = self._run_separate(run_inputs)
+            run_inputs = (self.Qi, self.Si, self.Xi, self.Qe, Se, self.Vliq,
+                          self.Y, self.mu_max, self.b, self.Fxb, self.Fxt)
+            Xw, Xe = self._run_separate(run_inputs)
 
             rxn_dct = {
                 'waste': (self.Sw, waste),
@@ -199,7 +188,7 @@ class IC(bst.MixTank):
             for k, v in rxn_dct.items():
                 # to calculate decay conversion
                 stream_copy = v[1].copy()
-                AD_rxns(v[1].mol)
+                digestion_rxns(v[1].mol)
                 # This is biomass change for mu_max-b
                 net_sludge = v[1].imol['WWTsludge'] - stream_copy.imol['WWTsludge']
 
@@ -213,10 +202,10 @@ class IC(bst.MixTank):
                 v[1].mix_from((v[1], stream_copy))
 
         else:
-            Xw = (Qi*Xi+Qi*(Si-self.Se)*Y-(Qi-Qw)*Xe)/Qw
-            Xe = inf.imass['WWTsludge'] - Xw
-            AD_rxns(waste.mol)
-            AD_rxns(eff.mol)
+            Xe = inf.imass['WWTsludge'] / (1+self.q_Xw)
+            Xw = inf.imass['WWTsludge'] - Xe
+            digestion_rxns(waste.mol)
+            digestion_rxns(eff.mol)
 
         # Changes due to biomass settling
         eff.imass['WWTsludge'] = Xe
@@ -226,21 +215,10 @@ class IC(bst.MixTank):
         biogas.receive_vent(waste, accumulate=True)
 
 
-    def _q_Qw_obj_func(self, q_Qw):
-        eff_temp = self._inf.copy()
-        self.AD_rxns(eff_temp.mol)
-        Se = compute_stream_COD(eff_temp)
-
-        Qi, Si, Xi, Xe = self.Qi, self.Si, self.Xi, self.Xe
-        Qw = Qi * q_Qw
-        Xw = (Qi*Xi+Qi*(Si-Se)*self.Y-(Qi-Qw)*Xe)/Qw
-
-        return Xw/Xe - self.q_Xw
-
-
     def _run_separate(self, run_inputs):
-        Qi, Si, Xi, Qe, Se, Vliq, Y, Qw, mu_max, b, Fxb, Fxt = run_inputs
+        Qi, Si, Xi, Qe, Se, Vliq, Y, mu_max, b, Fxb, Fxt = run_inputs
 
+        Qw = Qi - Qe
         Xb, Xe, Sb, Vb = sp.symbols('Xb, Xe, Sb, Vb', real=True)
 
         # Mass balances based on biomass/substrate changes in the bottom/top rx,
@@ -322,13 +300,13 @@ class IC(bst.MixTank):
 
     @property
     def method(self):
-        '''[str] Design method, can be "separate", "lumped-q_Qw", or "lumped-q_Xw".'''
+        '''[str] Design method, can be "separate" or "lumped".'''
         return self._method
     @method.setter
     def method(self, i):
-        if not i.lower() in ('separate', 'lumped-q_qw', 'lumped-q_xw'):
-            raise ValueError('`method` can only be "separated", "lumped-q_Qw", '
-                             f'or "lumped-q_Xw" not "{i}".')
+        if not i.lower() in ('separate', 'lumped'):
+            raise ValueError('`method` can only be "separated", or "lumped", '
+                             f'not "{i}".')
         self._method = i
 
     @property
@@ -463,10 +441,8 @@ class IC(bst.MixTank):
     def q_Xw(self):
         '''
         [float] Ratio between the biomass concentration in the reactor and the waste flow,
-        only relevant when either of the "lumped" method is used.
+        only relevant when the "lumped" method is used.
         '''
-        if self.method == 'lumped-q_Qw':
-            return self.Xw / self.Xe
         return _check_if_relevant(self._q_Xw, self.method, 'lumped')
     @q_Xw.setter
     def q_Xw(self, i):
@@ -584,14 +560,14 @@ class IC(bst.MixTank):
         return  self.Xe*self.Vliq / (self.q_Qw*self.q_Xw+self.Qe*self.Xe)
 
     @property
-    def AD_rxns(self):
+    def digestion_rxns(self):
         '''
         [:class:`tmo.ParallelReaction`] Anaerobic digestion reactions
         (biogas production and biomass growth).
         '''
-        if self._AD_rxns is None:
-            self._AD_rxns = self.get_AD_rxns()
-        return self._AD_rxns
+        if self._digestion_rxns is None:
+            self._digestion_rxns = self.get_digestion_rxns()
+        return self._digestion_rxns
 
     @property
     def decay_rxn(self):

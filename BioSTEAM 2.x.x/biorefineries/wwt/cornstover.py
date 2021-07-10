@@ -31,6 +31,7 @@ from biorefineries import (
     )
 from biorefineries.cornstover._process_settings import price
 #!!! Need to enable relative importing
+from _chemicals import create_cs_chemicals
 from _wwt_sys import create_wastewater_treatment_system
 
 
@@ -41,20 +42,12 @@ from _wwt_sys import create_wastewater_treatment_system
 # =============================================================================
 
 cs.cornstover_sys.simulate()
+
+chems = create_cs_chemicals()
+bst.settings.set_thermo(chems)
 temp_sludge = bst.Stream()
-temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol # from the cornstover biorefinery
-
-chems = cs.cornstover.chemicals
-# CSL stream is modeled as 50% water, 25% protein, and 25% lactic acid,
-# its formula was obtained using the following codes
-# get_atom = lambda chemical, element: chemical.atoms.get(element) or 0.
-# CSL_atoms = {}
-# for i in ('C', 'H', 'O', 'N', 'S'):
-#     CSL_atoms[i] = 0.5*get_atom(chems.Water, i)+\
-#         0.25*get_atom(chems.Protein, i)+0.25*get_atom(chems.LacticAcid, i)
-if not chems.CSL.formula:
-    chems.CSL.formula = 'CH2.8925O1.3275N0.0725S0.00175'
-
+# Copied from the cornstover biorefinery
+temp_sludge.imass['WWTsludge'] = 0.23 * cs.R601.ins[0].F_vol
 
 @bst.SystemFactory(
     ID='cornstover_sys',
@@ -115,7 +108,7 @@ def create_system(ins, outs, include_blowdown_recycle=False):
     wastewater_treatment_sys = create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater, temp_sludge],
         mockup=True,
-        IC_method='lumped-q_Qw',
+        IC_method='lumped',
         get_flow_tpd=lambda: 2205,
         need_ammonia=False
     )
@@ -148,10 +141,6 @@ cs.load_process_settings()
 cornstover_sys = create_system(include_blowdown_recycle=False)
 u = F.unit
 
-# u.R601.organic_rm = 1
-# u.R601.BD_dct = get_BD_dct(0.87)
-# u.R601.BD_dct = dict.fromkeys([i.ID for i in chems], 1)
-
 cornstover_sys.simulate()
 
 WWT_units = [i for i in u if i.ID[1:3]=='60']
@@ -160,12 +149,13 @@ OSBL_units = (*WWT_units, u.CWP, u.CT, u.PWC, u.ADP,
               u.CSL_storage, u.DAP_storage, u.BT)
 cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
 ethanol = F.stream.ethanol
-ethanol.price = cornstover_tea.solve_price(ethanol)
-ethanol_price_gal = ethanol.price * cs.ethanol_density_kggal
-print(ethanol_price_gal)
 
-#!!! PAUSED, resave the system reports and compare installed costs, utilities
-# under 100% of all conversions
+def get_MESP():
+    ethanol.price = cornstover_tea.solve_price(ethanol)
+    ethanol_price_gal = ethanol.price * cs.ethanol_density_kggal
+    print(f'MESP is ${ethanol_price_gal:.2f}/gal.')
+
+get_MESP()
 
 # UnitGroup = bst.process_tools.UnitGroup
 # Area100 = UnitGroup('Area 100', (u.U101,))

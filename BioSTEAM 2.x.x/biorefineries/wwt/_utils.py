@@ -19,26 +19,25 @@ from thermosteam.reaction import (
     Reaction as Rxn,
     ParallelReaction as PRxn
     )
-from biosteam.utils import ExponentialFunctor
+from biosteam.utils import (
+    ExponentialFunctor,
+    remove_undefined_chemicals,
+    default_chemical_dict
+    )
 from biosteam.units.design_tools.tank_design import (
     mix_tank_purchase_cost_algorithms,
     TankPurchaseCostAlgorithm
     )
+from _chemicals import insolubles
 
 __all__ = (
     'get_BD_dct',
     'compute_stream_COD',
-    'get_AD_rxns',
+    'get_digestion_rxns',
     'IC_purchase_cost_algorithms',
-    'insolubles'
+    'get_MB_split',
     )
 
-
-insolubles = ('Tar', 'Lime', 'CaSO4', 'Ash', 'Lignin', 'Z_mobilis', 'T_reesei',
-              'Cellulose', 'Protein', 'Enzyme', 'DenaturedEnzyme', 'WWTsludge')
-
-
-# %%
 
 def get_CHONSP(chemical):
     organic = True
@@ -116,7 +115,7 @@ def get_BMP_stoichiometry(chemical):
 
 # Biodegradability, 0.87 from glucose (treated as the maximum value)
 def get_BD_dct(chemicals, default_BD=0.87, **kwargs):
-    BD_dct = dict.fromkeys(chemicals, default_BD)
+    BD_dct = dict.fromkeys([i.ID for i in chemicals], default_BD)
 
     # Based on Kontos thesis
     BD_dct['AceticAcid'] = 0.87
@@ -161,11 +160,11 @@ def compute_stream_COD(stream):
     return COD
 
 
-def get_AD_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
+def get_digestion_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
     biomass_MW = getattr(stream.chemicals, biomass_ID).MW
     chems = [i for i in stream.chemicals if i.ID!=biomass_ID]
     if isinstance(BD, float):
-        BD = dict.fromkeys(chems, BD)
+        BD = dict.fromkeys([i.ID for i in chems], BD)
 
     if X_biogas+X_growth > 1:
         raise ValueError(f'Sum of `X_biogas` and `X_biogas` is {X_biogas+X_growth}, '
@@ -178,26 +177,29 @@ def get_AD_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
         if not X:
             continue # assume no entry means not biodegradable
 
-        iX_biogas = X * X_biogas # the amount of chemical used for biogas production
-        iX_growth = X * X_growth # the amount of chemical used for cell growth
-
         biogas_stoyk = get_BMP_stoichiometry(i)
         if biogas_stoyk[i.ID] == 0: # no conversion of this chemical
             continue
 
-        biogas_rxn = Rxn(reaction=biogas_stoyk, reactant=i.ID, X=iX_biogas,
-                         check_atomic_balance=True)
+        iX_biogas = X * X_biogas # the amount of chemical used for biogas production
+        iX_growth = X * X_growth # the amount of chemical used for cell growth
 
+        if iX_biogas:
+            biogas_rxn = Rxn(reaction=biogas_stoyk, reactant=i.ID, X=iX_biogas,
+                             check_atomic_balance=True)
+            biogas_rxns.append(biogas_rxn)
+
+        if iX_growth:
         # Cannot check atom balance since the substrate may not have the atom
-        #!!! Maybe balance this with CSL and some other chemicals
-        growth_rxn = Rxn(f'{i.ID} -> {i.MW/biomass_MW}{biomass_ID}',
-                         reactant=i.ID, X=iX_growth,
-                         check_atomic_balance=False)
+        #!!! Maybe balance this with CSL, DAP, and some other chemicals
+            growth_rxn = Rxn(f'{i.ID} -> {i.MW/biomass_MW}{biomass_ID}',
+                             reactant=i.ID, X=iX_growth,
+                             check_atomic_balance=False)
 
-        biogas_rxns.append(biogas_rxn)
-        growth_rxns.append(growth_rxn)
 
-    if len(biogas_rxns)>1:
+            growth_rxns.append(growth_rxn)
+
+    if len(biogas_rxns)+len(growth_rxns)>1:
         return PRxn(biogas_rxns+growth_rxns)
 
     return []
@@ -217,3 +219,52 @@ ic = TankPurchaseCostAlgorithm(
     material='Stainless steel')
 
 IC_purchase_cost_algorithms['IC'] = ic
+
+
+# %%
+
+# Split for the membrane bioreactor
+def get_MB_split(chemicals, split_dct=None):
+    # Copied from the cornstover biorefinery,
+    # which is based on the 2011 NREL report (Humbird et al.)
+    split = dict(
+        Water=0.1454,
+        Glycerol=0.125,
+        LacticAcid=0.145,
+        SuccinicAcid=0.125,
+        HNO3=0.1454,
+        Denaturant=0.125,
+        DAP=0.1454,
+        AmmoniumAcetate=0.145,
+        AmmoniumSulfate=0.1454,
+        H2SO4=0.1454,
+        NaNO3=0.1454,
+        Oil=0.125,
+        N2=0.1351,
+        NH3=0.1579,
+        O2=0.15,
+        CO2=0.1364,
+        Xylose=0.25,
+        Sucrose=0.125,
+        Mannose=0.125,
+        Galactose=0.125,
+        Arabinose=0.125,
+        Extract=0.145,
+        NaOH=0.1454,
+        SolubleLignin=0.145,
+        GlucoseOligomer=0.1429,
+        GalactoseOligomer=0.1429,
+        MannoseOligomer=0.1429,
+        XyloseOligomer=0.1429,
+        ArabinoseOligomer=0.1429,
+        Xylitol=0.125,
+        Cellobiose=0.125,
+        Cellulase=0.145
+        )
+    remove_undefined_chemicals(split, chemicals)
+    default_chemical_dict(split, chemicals, 0.15, 0.125, 0.145)
+
+    if split_dct is not None:
+        split.update(split_dct)
+
+    return split

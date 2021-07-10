@@ -10,5 +10,15 @@
 # for license details.
 
 '''
-Biorefinery settings (e.g., chemical/utility price)
+Biorefinery settings.
 '''
+
+__all__ = (
+    'cs_price', 'load_cs_settings',
+    )
+
+
+from biorefineries.cornstover._process_settings import (
+    price as cs_price,
+    load_process_settings as load_cs_settings,
+    )
