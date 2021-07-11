@@ -19,11 +19,27 @@ Second Generation Bioethanol and Furfural Coproduction.
 Biochemical Engineering Journal 2019, 144, 89–103.
 https://doi.org/10.1016/j.bej.2019.01.017.
 
+[2] Davis et al., Process Design and Economics for the Conversion of Lignocellulosic
+Biomass to Hydrocarbon Fuels and Coproducts: 2018 Biochemical Design Case Update;
+NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
+https://doi.org/10.2172/1483234.
+
+.. note::
+    The cornstover biorefinery uses 2011 USD whereas sugarcane and lipidcane
+    biorefineries use 2013 USD, thus ideallly prices in the the `new_price` dct
+    should be adjusted accordingly. However, since the calculated MESPs are only
+    used for comparison between biorefineries with the new wastewater treatment
+    process vs. without/with the original process, this will not affect the
+    conclusions.
 '''
 
 __all__ = (
-    'price', 'load_cs_settings',
-    'load_sc_settings'
+    'cs_price',
+    'lc_price',
+    'new_price',
+    'load_cs_settings',
+    'load_sc_settings',
+    'load_lc_settings'
     )
 
 from biorefineries import cornstover as cs
@@ -35,6 +51,17 @@ from biorefineries.cornstover._process_settings import (
 from biorefineries.sugarcane._process_settings import \
     load_process_settings as load_sc_settings
 
-price = cs_price.copy()
-price['Caustics'] = cs.caustic.price
-price['Wastewater'] = -0.03 # ref [1], negative value for cost from product
+from biorefineries.lipidcane._process_settings import (
+    price as lc_price,
+    load_process_settings as load_lc_settings
+    )
+
+from _utils import auom
+_lb_per_kg = auom('kg').conversion_factor('lb')
+_GDP_2007to2016 = 1.160
+
+new_price = {
+    'Caustics': cs.caustic.price,
+    'Wastewater': -0.03, # ref [1], negative value for cost from product,
+    'Polymer': 2.6282 * _lb_per_kg / _GDP_2007to2016, # ref [2]
+    }

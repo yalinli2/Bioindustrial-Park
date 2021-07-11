@@ -20,7 +20,7 @@ from biorefineries import sugarcane as sc
 #!!! Need to enable relative importing
 from _chemicals import create_sc_chemicals
 from _utils import kph_to_tpd, get_MESP
-from _settings import price, load_sc_settings
+from _settings import new_price, load_sc_settings
 from _wwt_sys import create_wastewater_treatment_system
 
 
@@ -64,13 +64,13 @@ def create_sc_system(ins, outs):
         ins=(juicing_sys-0, denaturant), outs=(ethanol, vinasse),
         mockup=True
     )
-    M305 = bst.units.Mixer('M305',
+    bst.units.Mixer('M305',
         ins=(juicing_sys-2, *ethanol_production_sys-[2, 3]),
         outs=wastewater
     )
 
     ### Wastewater treatment ###
-    wastewater_treatment_sys = create_wastewater_treatment_system(
+    create_wastewater_treatment_system(
         ins=[vinasse, wastewater],
         mockup=True,
         IC_method='lumped',
@@ -79,13 +79,13 @@ def create_sc_system(ins, outs):
     )
 
     ### Facilities ###
-    BT = bst.units.BoilerTurbogenerator('BT',
+    bst.units.BoilerTurbogenerator('BT',
         (juicing_sys-1, u.R601-0, 'boiler_makeup_water', 'natural_gas', '', ''),
         outs=(emissions, 'rejected_water_and_blowdown', ash_disposal),
         boiler_efficiency=0.80,
         turbogenerator_efficiency=0.85
     )
-    CT = bst.units.CoolingTower('CT')
+    bst.units.CoolingTower('CT')
     makeup_water_streams = (s.cooling_tower_makeup_water,
                             s.boiler_makeup_water)
     process_water_streams = (s.imbibition_water,
@@ -93,8 +93,8 @@ def create_sc_system(ins, outs):
                              s.stripping_water,
                              *makeup_water_streams)
     makeup_water = bst.Stream('makeup_water', price=0.000254)
-    CWP = bst.units.ChilledWaterPackage('CWP')
-    PWC = bst.units.ProcessWaterCenter('PWC',
+    bst.units.ChilledWaterPackage('CWP')
+    bst.units.ProcessWaterCenter('PWC',
                                    (u.S605-0, # recycled wastewater from reverse osmosis
                                     makeup_water),
                                    (),
@@ -110,7 +110,7 @@ def create_sc_system(ins, outs):
 
     F301 = u.F301
     D303 = u.D303
-    HXN = bst.HeatExchangerNetwork('HXN', units=[F301, D303])
+    bst.HeatExchangerNetwork('HXN', units=[F301, D303])
 
 
 # %%
@@ -129,8 +129,21 @@ sugarcane_tea = sc.create_tea(sugarcane_sys)
 ethanol = F.stream.ethanol
 
 # Compare MESP
-sc.wastewater.price = price['Wastewater']
-MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys')
+sugarcane_tea.IRR = sc.sugarcane_tea.IRR
+assert(sugarcane_tea.IRR==sc.sugarcane_tea.IRR)
+print(f'\n\nIRR = {sugarcane_tea.IRR:.0%}')
+MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w/o ww cost')
+sc.wastewater.price = new_price['Wastewater']
+MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w ww cost')
+MESP_new = get_MESP(ethanol, sugarcane_tea, 'new sc sys')
+
+sugarcane_tea.IRR = sc.sugarcane_tea.IRR = 0.1
+assert(sugarcane_tea.IRR==sc.sugarcane_tea.IRR)
+print(f'\n\nIRR = {sugarcane_tea.IRR:.0%}')
+sc.wastewater.price = 0.
+MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w/o ww cost')
+sc.wastewater.price = new_price['Wastewater']
+MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w ww cost')
 MESP_new = get_MESP(ethanol, sugarcane_tea, 'new sc sys')
 
 # Ratios for IC design

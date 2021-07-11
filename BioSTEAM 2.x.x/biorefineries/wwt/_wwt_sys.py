@@ -15,14 +15,15 @@ Unit construction and functions for creating wastewwater treatment system.
 References
 ----------
 [1] Humbird et al., Process Design and Economics for Biochemical Conversion of
-    Lignocellulosic Biomass to Ethanol: Dilute-Acid Pretreatment and Enzymatic
-    Hydrolysis of Corn Stover; Technical Report NREL/TP-5100-47764;
-    National Renewable Energy Lab (NREL), 2011.
-    https://www.nrel.gov/docs/fy11osti/47764.pdf
+Lignocellulosic Biomass to Ethanol: Dilute-Acid Pretreatment and Enzymatic
+Hydrolysis of Corn Stover; Technical Report NREL/TP-5100-47764;
+National Renewable Energy Lab (NREL), 2011.
+https://www.nrel.gov/docs/fy11osti/47764.pdf
+
 [2] Davis et al., Process Design and Economics for the Conversion of Lignocellulosic
-    Biomass to Hydrocarbon Fuels and Coproducts: 2018 Biochemical Design Case Update;
-    NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
-    https://doi.org/10.2172/1483234
+Biomass to Hydrocarbon Fuels and Coproducts: 2018 Biochemical Design Case Update;
+NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
+https://doi.org/10.2172/1483234
 
 TODO:
     AerobicDigestion and MembraneBioreactor will be replaced by
@@ -46,15 +47,12 @@ from _utils import (
     get_digestion_rxns,
     get_MB_split,
     )
-from _settings import price
+from _settings import new_price
 from _ic import IC
 
 _MGD_2_m3hr = auom('gallon').conversion_factor('m3')*1e6/24
 _GPM_2_m3hr = auom('gallon').conversion_factor('m3')*60
 _Gcal_2_kJ = auom('kcal').conversion_factor('kJ')*1e6 # (also MMkcal/hr)
-_lb_per_kg = auom('kg').conversion_factor('lb')
-_GDP_2007to2016 = 1.160
-polymer_pirce = 2.6282 * _lb_per_kg / _GDP_2007to2016
 
 Rxn = tmo.reaction.Reaction
 ParallelRxn = tmo.reaction.ParallelReaction
@@ -282,16 +280,13 @@ class ReverseOsmosis(Unit):
 
 def create_wastewater_treatment_units(ins, outs, IC_method,
                                       dry_flow_tpd, need_ammonia):
-    # wwt_streams, recycled_sludge = ins[:-1], ins[-1]
     wwt_streams = ins
     biogas, vent_R602, S604_CHP, recycled_water, brine = outs
     vent_R602.phase = 'g'
 
     ammonia_R602 = Stream('ammonia_R602', units='kg/hr')
-    caustic_R602 = Stream('caustic_R602', units='kg/hr', price=price['Caustics'])
-    polymer_R602 = Stream('polymer_R602', units='kg/hr',
-                           price=polymer_pirce
-                          )
+    caustic_R602 = Stream('caustic_R602', units='kg/hr', price=new_price['Caustics'])
+    polymer_R602 = Stream('polymer_R602', units='kg/hr', price=new_price['Polymer'])
     air_R602 = Stream('air_R602', phase='g', units='kg/hr')
 
     ######################## Units ########################

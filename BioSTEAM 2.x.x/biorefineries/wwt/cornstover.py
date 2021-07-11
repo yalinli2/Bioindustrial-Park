@@ -94,7 +94,7 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
         blowdown_to_wastewater = bst.Stream('blowdown_to_wastewater')
     else:
         blowdown_to_wastewater = None
-    wastewater_treatment_sys = create_wastewater_treatment_system(
+    create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
         mockup=True,
         IC_method='lumped',
@@ -138,6 +138,9 @@ cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
 ethanol = F.stream.ethanol
 
 # Compare MESP
+assert(cornstover_tea.IRR==cs.cornstover_tea.IRR)
+print(f'\n\nIRR = {cornstover_tea.IRR:.0%}')
+cornstover_tea.IRR = cs.cornstover_tea.IRR = 0.1
 MESP_old = get_MESP(cs.ethanol, cs.cornstover_tea, 'old cs sys')
 MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 

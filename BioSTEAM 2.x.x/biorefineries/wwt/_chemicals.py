@@ -25,6 +25,8 @@ __all__ = (
     'get_insoluble_IDs',
     'get_soluble_IDs',
     'create_cs_chemicals',
+    'create_sc_chemicals',
+    'create_lc_chemicals',
     )
 
 default_insolubles = (
@@ -48,7 +50,7 @@ def get_soluble_IDs(chemicals, insolubles):
 _cal2joule = auom('cal').conversion_factor('J')
 
 def add_wwt_chemicals(chemicals):
-    chems = tmo.Chemicals([i for i in chemicals])
+    chems = chemicals.copy()
     exist_IDs = [i.ID for i in chems]
     def chemical_database(ID, phase=None, **data):
         if not ID in exist_IDs:
@@ -88,6 +90,30 @@ def add_wwt_chemicals(chemicals):
     return chems
 
 
+synonym_dct = {
+    'Water': 'H2O',
+    'Denaturant': 'Octane',
+    'CO2': 'CarbonDioxide',
+    'NH3': 'Ammonia',
+    'H2SO4': 'SulfuricAcid',
+    'AmmoniumSulfate': '(NH4)2SO4',
+    'Lime': 'Ca(OH)2',
+    'Yeast': 'DryYeast',
+    'OleicAcid': 'FFA',
+    'MonoOlein': 'MAG',
+    'DiOlein': 'DAG',
+    'TriOlein': 'TAG',
+    }
+def set_synonym_grp(chemicals):
+    for i in chemicals:
+        if i.ID in synonym_dct.keys():
+            chemicals.set_synonym(i.ID, synonym_dct[i.ID])
+            if i.ID == 'OleicAcid':
+                chemicals.define_group('Lipid', ('PL', 'FFA', 'MAG', 'DAG', 'TAG'))
+
+    return chemicals
+
+
 # For the cornstover biorefinery
 def create_cs_chemicals():
     '''
@@ -96,6 +122,7 @@ def create_cs_chemicals():
     '''
     from biorefineries.cornstover import create_chemicals
     cs_chems = create_chemicals()
+
     # CSL stream is modeled as 50% water, 25% protein, and 25% lactic acid,
     # its formula was obtained using the following codes
     # get_atom = lambda chemical, element: chemical.atoms.get(element) or 0.
@@ -107,7 +134,7 @@ def create_cs_chemicals():
 
     new_chems = add_wwt_chemicals(cs_chems)
     new_chems.compile()
-
+    new_chems = set_synonym_grp(new_chems)
     return new_chems
 
 
@@ -121,4 +148,19 @@ def create_sc_chemicals():
     sc_chems = create_chemicals()
     new_chems = add_wwt_chemicals(sc_chems)
     new_chems.compile()
+    new_chems = set_synonym_grp(new_chems)
+    return new_chems
+
+
+# For the lipidcane biorefinery
+def create_lc_chemicals():
+    '''
+    Create compiled chemicals for the lipidcane biorefinery with the new
+    wastewater treatment process.
+    '''
+    from biorefineries.lipidcane import create_chemicals
+    lc_chems = create_chemicals()
+    new_chems = add_wwt_chemicals(lc_chems)
+    new_chems.compile()
+    new_chems = set_synonym_grp(new_chems)
     return new_chems
