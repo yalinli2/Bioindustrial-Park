@@ -39,39 +39,45 @@ bst.settings.set_thermo(chems)
     ins=[*sc.create_juicing_system_with_fiber_screener.ins,
          sc.create_ethanol_purification_system.ins[1]], # denaturant
     outs=[sc.create_ethanol_purification_system.outs[0], # ethanol
-          dict(ID='vinasse'),
-          dict(ID='wastewater'),
+          dict(ID='vent_R602'),
+          dict(ID='brine'),
           dict(ID='emissions'),
           dict(ID='ash_disposal')]
+
 )
 def create_sc_system(ins, outs):
     s = F.stream
     u = F.unit
 
     sugarcane, enzyme, H3PO4, lime, polymer, denaturant = ins
-    ethanol, vinasse, wastewater, emissions, ash_disposal = outs
+    ethanol, vent_R602, brine, emissions, ash_disposal = outs
 
     feedstock_handling_sys = sc.create_feedstock_handling_system(
         ins=[sugarcane],
         outs=[''],
         mockup=True,
     )
+
     juicing_sys = sc.create_juicing_system_with_fiber_screener(
         ins=[feedstock_handling_sys-0, enzyme, H3PO4, lime, polymer],
         mockup=True
     )
+
     ethanol_production_sys = sc.create_sucrose_to_ethanol_system(
-        ins=(juicing_sys-0, denaturant), outs=(ethanol, vinasse),
+        ins=(juicing_sys-0, denaturant), outs=(ethanol, 'vinasse'),
         mockup=True
     )
-    bst.units.Mixer('M305',
+
+    M305 = bst.units.Mixer(
+        'M305',
         ins=(juicing_sys-2, *ethanol_production_sys-[2, 3]),
-        outs=wastewater
+        outs='wastewater'
     )
 
     ### Wastewater treatment ###
     create_wastewater_treatment_system(
-        ins=[vinasse, wastewater],
+        ins=[ethanol_production_sys-1, M305-0],
+        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
         mockup=True,
         IC_method='lumped',
         dry_flow_tpd=kph_to_tpd(s.sugarcane),
@@ -83,9 +89,10 @@ def create_sc_system(ins, outs):
         (juicing_sys-1, u.R601-0, 'boiler_makeup_water', 'natural_gas', '', ''),
         outs=(emissions, 'rejected_water_and_blowdown', ash_disposal),
         boiler_efficiency=0.80,
-        turbogenerator_efficiency=0.85
-    )
+        turbogenerator_efficiency=0.85)
     bst.units.CoolingTower('CT')
+    bst.units.ChilledWaterPackage('CWP')
+
     makeup_water_streams = (s.cooling_tower_makeup_water,
                             s.boiler_makeup_water)
     process_water_streams = (s.imbibition_water,
@@ -93,14 +100,13 @@ def create_sc_system(ins, outs):
                              s.stripping_water,
                              *makeup_water_streams)
     makeup_water = bst.Stream('makeup_water', price=0.000254)
-    bst.units.ChilledWaterPackage('CWP')
     bst.units.ProcessWaterCenter('PWC',
-                                   (u.S605-0, # recycled wastewater from reverse osmosis
-                                    makeup_water),
-                                   (),
-                                   None,
-                                   makeup_water_streams,
-                                   process_water_streams)
+                                 (u.S605-0, # recycled wastewater from reverse osmosis
+                                 makeup_water),
+                                 (),
+                                 None,
+                                 makeup_water_streams,
+                                 process_water_streams)
 
     plant_air = bst.Stream('plant_air', N2=83333, units='kg/hr')
     ADP = bst.facilities.AirDistributionPackage('ADP', plant_air)
@@ -129,9 +135,10 @@ sugarcane_tea = sc.create_tea(sugarcane_sys)
 ethanol = F.stream.ethanol
 
 # Compare MESP
-sugarcane_tea.IRR = sc.sugarcane_tea.IRR
-assert(sugarcane_tea.IRR==sc.sugarcane_tea.IRR)
-print(f'\n\nIRR = {sugarcane_tea.IRR:.0%}')
+original_IRR = 0.1267
+sugarcane_tea.IRR = sc.sugarcane_tea.IRR = original_IRR
+print(f'\n\nIRR = {original_IRR:.0%}')
+sc.wastewater.price = 0.
 MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w/o ww cost')
 sc.wastewater.price = new_price['Wastewater']
 MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w ww cost')

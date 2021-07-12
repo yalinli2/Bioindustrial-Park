@@ -134,6 +134,7 @@ class IC(bst.MixTank):
     _default_vessel_type = 'IC'
     _default_vessel_material = 'Stainless steel'
     purchase_cost_algorithms = IC_purchase_cost_algorithms
+    compute_stream_COD = compute_stream_COD
 
     # Heating utilities
     auxiliary_unit_names = ('heat_exchanger',)

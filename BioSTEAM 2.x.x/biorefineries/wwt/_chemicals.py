@@ -108,7 +108,7 @@ def set_synonym_grp(chemicals):
     for i in chemicals:
         if i.ID in synonym_dct.keys():
             chemicals.set_synonym(i.ID, synonym_dct[i.ID])
-            if i.ID == 'OleicAcid':
+            if i.ID == 'TriOlein':
                 chemicals.define_group('Lipid', ('PL', 'FFA', 'MAG', 'DAG', 'TAG'))
 
     return chemicals
@@ -120,17 +120,17 @@ def create_cs_chemicals():
     Create compiled chemicals for the cornstover biorefinery with the new
     wastewater treatment process.
     '''
-    from biorefineries.cornstover import create_chemicals
-    cs_chems = create_chemicals()
+    from biorefineries.cornstover import chemicals as cs_chems
 
-    # CSL stream is modeled as 50% water, 25% protein, and 25% lactic acid,
-    # its formula was obtained using the following codes
-    # get_atom = lambda chemical, element: chemical.atoms.get(element) or 0.
-    # CSL_atoms = {}
-    # for i in ('C', 'H', 'O', 'N', 'S'):
-    #     CSL_atoms[i] = 0.5*get_atom(chems.Water, i)+\
-    #         0.25*get_atom(chems.Protein, i)+0.25*get_atom(chems.LacticAcid, i)
-    cs_chems.CSL.formula = 'CH2.8925O1.3275N0.0725S0.00175'
+    if cs_chems.CSL.formula is None:
+        # CSL stream is modeled as 50% water, 25% protein, and 25% lactic acid,
+        # its formula was obtained using the following codes
+        # get_atom = lambda chemical, element: chemical.atoms.get(element) or 0.
+        # CSL_atoms = {}
+        # for i in ('C', 'H', 'O', 'N', 'S'):
+        #     CSL_atoms[i] = 0.5*get_atom(chems.Water, i)+\
+        #         0.25*get_atom(chems.Protein, i)+0.25*get_atom(chems.LacticAcid, i)
+        cs_chems.CSL.formula = 'CH2.8925O1.3275N0.0725S0.00175'
 
     new_chems = add_wwt_chemicals(cs_chems)
     new_chems.compile()
@@ -144,8 +144,7 @@ def create_sc_chemicals():
     Create compiled chemicals for the sugarcane biorefinery with the new
     wastewater treatment process.
     '''
-    from biorefineries.sugarcane import create_chemicals
-    sc_chems = create_chemicals()
+    from biorefineries.sugarcane import chemicals as sc_chems
     new_chems = add_wwt_chemicals(sc_chems)
     new_chems.compile()
     new_chems = set_synonym_grp(new_chems)
@@ -158,8 +157,7 @@ def create_lc_chemicals():
     Create compiled chemicals for the lipidcane biorefinery with the new
     wastewater treatment process.
     '''
-    from biorefineries.lipidcane import create_chemicals
-    lc_chems = create_chemicals()
+    from biorefineries.lipidcane import chemicals as lc_chems
     new_chems = add_wwt_chemicals(lc_chems)
     new_chems.compile()
     new_chems = set_synonym_grp(new_chems)

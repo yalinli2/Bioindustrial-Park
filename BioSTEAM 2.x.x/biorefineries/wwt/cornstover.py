@@ -42,27 +42,31 @@ bst.settings.set_thermo(chems)
     ID='cornstover_sys',
     ins=[*cs.create_dilute_acid_pretreatment_system.ins,
           dict(ID='denaturant',
-              Octane=1,
-              price=cs_price['Denaturant'])],
-    outs=[dict(ID='ethanol',
-                price=cs_price['Ethanol'])],
+               Octane=1,
+               price=cs_price['Denaturant'])],
+    outs=[dict(ID='ethanol', price=cs_price['Ethanol']),
+          dict(ID='vent_R602'),
+          dict(ID='brine')],
 )
 def create_cs_system(ins, outs, include_blowdown_recycle=False):
     feedstock, denaturant = ins
-    ethanol, = outs
+    ethanol, vent_R602, brine = outs
     f = bst.main_flowsheet
     s = f.stream
     u = f.unit
     U101 = cs.FeedStockHandling('U101', feedstock)
     U101.cost_items['System'].cost = 0.
+
     pretreatment_sys = cs.create_dilute_acid_pretreatment_system(
         ins=U101-0,
         mockup=True
     )
+
     fermentation_sys = cs.create_cellulosic_fermentation_system(
         ins=pretreatment_sys-0,
         mockup=True,
     )
+
     ethanol_purification_sys = sc.create_ethanol_purification_system(
         ins=[fermentation_sys-1, denaturant],
         outs=[ethanol],
@@ -94,14 +98,18 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
         blowdown_to_wastewater = bst.Stream('blowdown_to_wastewater')
     else:
         blowdown_to_wastewater = None
+
     create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
+        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
         mockup=True,
         IC_method='lumped',
         dry_flow_tpd=kph_to_tpd(s.cornstover),
         need_ammonia=False
     )
+
     M501 = bst.Mixer('M501', (u.S604-1, S401-0))
+
     cs.create_facilities(
         solids_to_boiler=M501-0,
         gas_to_boiler=u.R601-0,
@@ -138,9 +146,8 @@ cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
 ethanol = F.stream.ethanol
 
 # Compare MESP
-assert(cornstover_tea.IRR==cs.cornstover_tea.IRR)
+assert(cornstover_tea.IRR==cs.cornstover_tea.IRR==0.1)
 print(f'\n\nIRR = {cornstover_tea.IRR:.0%}')
-cornstover_tea.IRR = cs.cornstover_tea.IRR = 0.1
 MESP_old = get_MESP(cs.ethanol, cs.cornstover_tea, 'old cs sys')
 MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 

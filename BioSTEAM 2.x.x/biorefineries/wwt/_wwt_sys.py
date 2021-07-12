@@ -327,14 +327,10 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
                             outs=('S604_centrate', S604_CHP))
 
     # Mix recycles to aerobic digestion
-    M602 = bst.units.Mixer('M602', ins=(S602-0, S603-0, S604-0), outs=1-R602)
-
-    aerobic_recycle = bst.System('aerobic_recycle',
-                                 path=(R602, S601, S602, S603, S604, M602),
-                                 recycle=M602-0)
+    bst.units.Mixer('M602', ins=(S602-0, S603-0, S604-0), outs=1-R602)
 
     # Reverse osmosis to treat membrane separated water
-    S605 = ReverseOsmosis('S605', ins=S601-0, outs=(recycled_water, brine))
+    ReverseOsmosis('S605', ins=S601-0, outs=(recycled_water, brine))
 
 
 create_wastewater_treatment_system = bst.SystemFactory(

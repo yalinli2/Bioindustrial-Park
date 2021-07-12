@@ -43,8 +43,8 @@ bst.settings.set_thermo(chems)
     outs=[dict(ID='ethanol', price=lc_price['Ethanol']),
           dict(ID='biodiesel', price=lc_price['Biodiesel']),
           dict(ID='crude_glycerol', price=lc_price['Crude glycerol']),
-          dict(ID='vinasse'),
-          dict(ID='wastewater'),
+          dict(ID='vent_R602'),
+          dict(ID='brine'),
           dict(ID='emissions'),
           dict(ID='ash_disposal')]
 )
@@ -53,9 +53,9 @@ def create_lc_system(ins, outs):
     u = F.unit
 
     lipidcane, enzyme, H3PO4, lime, polymer, denaturant = ins
-    ethanol, biodiesel, crude_glycerol, vinasse, wastewater, emissions, ash_disposal = outs
+    ethanol, biodiesel, crude_glycerol, vent_R602, brine, emissions, ash_disposal = outs
 
-    feedstock_handling_sys = sc.create_feedstock_handling_system(
+    feedstock_handling_sys = lc.create_feedstock_handling_system(
         ins=lipidcane,
         mockup=True,
     )
@@ -69,7 +69,7 @@ def create_lc_system(ins, outs):
     ### Ethanol section ###
     ethanol_production_sys = sc.create_sucrose_to_ethanol_system(
         ins=[juicing_and_lipid_extraction_sys-0, denaturant],
-        outs=[ethanol, vinasse],
+        outs=[ethanol, 'vinasse'],
         mockup=True,
     )
 
@@ -83,8 +83,17 @@ def create_lc_system(ins, outs):
     )
 
     ### Wastewater treatment ###
+    M305 = bst.Mixer(
+        'M305',
+        ins=(juicing_and_lipid_extraction_sys-4,
+             juicing_and_lipid_extraction_sys-3,
+             *ethanol_production_sys-[2, 3]),
+        outs='wastewater',
+    )
+
     create_wastewater_treatment_system(
-        ins=[vinasse, wastewater],
+        ins=[ethanol_production_sys-1, M305-0],
+        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
         mockup=True,
         IC_method='lumped',
         dry_flow_tpd=kph_to_tpd(s.lipidcane),
@@ -92,42 +101,31 @@ def create_lc_system(ins, outs):
     )
 
     ### Facilities ###
-    bst.Mixer('M305',
-        ins=(juicing_and_lipid_extraction_sys-4,
-             juicing_and_lipid_extraction_sys-3,
-             *ethanol_production_sys-[1, 2, 3]),
-        outs=wastewater,
-    )
-
-    # Burn bagasse from conveyor belt
     bst.units.BoilerTurbogenerator('BT',
                                    (juicing_and_lipid_extraction_sys-2, u.R601-0,
                                     'boiler_makeup_water', 'natural_gas', '', ''),
                                    (emissions, 'rejected_water_and_blowdown', ash_disposal),
                                    boiler_efficiency=0.80,
                                    turbogenerator_efficiency=0.85)
-
     bst.units.CoolingTower('CT')
+    bst.units.ChilledWaterPackage('CWP')
+
     makeup_water_streams = (s.cooling_tower_makeup_water,
                             s.boiler_makeup_water)
-
     process_water_streams = (s.imbibition_water,
                              s.biodiesel_wash_water,
                              s.oil_wash_water,
                              s.rvf_wash_water,
                              s.stripping_water,
                              *makeup_water_streams)
-
     makeup_water = bst.Stream('makeup_water', price=0.000254)
-
-    bst.units.ChilledWaterPackage('CWP')
     bst.units.ProcessWaterCenter('PWC',
-                                  (u.S605-0, # recycled wastewater from reverse osmosis
-                                  makeup_water),
-                                  (),
-                                  None,
-                                  makeup_water_streams,
-                                  process_water_streams)
+                                 (u.S605-0, # recycled wastewater from reverse osmosis
+                                 makeup_water),
+                                 (),
+                                 None,
+                                 makeup_water_streams,
+                                 process_water_streams)
 
     plant_air = bst.Stream('plant_air', N2=83333, units='kg/hr')
     ADP = bst.facilities.AirDistributionPackage('ADP', plant_air)
@@ -156,15 +154,17 @@ lipidcane_tea = lc.create_tea(lipidcane_sys)
 ethanol = F.stream.ethanol
 
 # Compare MESP
-lipidcane_tea.IRR = lc.lipidcane_tea.IRR
-assert(lipidcane_tea.IRR==lc.lipidcane_tea.IRR)
-print(f'\n\nIRR = {lipidcane_tea.IRR:.0%}')
+original_IRR = 0.2108
+lipidcane_tea.IRR = lc.lipidcane_tea.IRR = original_IRR
+print(f'\n\nIRR = {original_IRR:.0%}')
+lc.wastewater.price = 0.
 MESP_old = get_MESP(lc.ethanol, lc.lipidcane_tea, 'old lc sys w/o ww cost')
 lc.wastewater.price = new_price['Wastewater']
 MESP_old = get_MESP(lc.ethanol, lc.lipidcane_tea, 'old lc sys w ww cost')
 MESP_new = get_MESP(ethanol, lipidcane_tea, 'new lc sys')
 
 lipidcane_tea.IRR = lc.lipidcane_tea.IRR = 0.1
+ethanol.price = lc.ethanol.price = lc_price['Ethanol']
 assert(lipidcane_tea.IRR==lc.lipidcane_tea.IRR)
 print(f'\n\nIRR = {lipidcane_tea.IRR:.0%}')
 lc.wastewater.price = 0.
