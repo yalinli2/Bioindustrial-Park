@@ -9,25 +9,18 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
-import biosteam as bst
-bst.speed_up()
-
 from . import (
-    _chemicals,
-    utils,
-    _settings,
-    _internal_circulation_rx,
-    _wwt_sys,
+    misc,
+    ic_utils,
+    pipe,
     )
 
-from ._chemicals import *
-from ._settings import *
-from ._internal_circulation_rx import *
-from ._wwt_sys import *
+from .misc import *
+from .ic_utils import *
+from .pipe import *
 
 __all__ = (
-    *_chemicals.__all__,
-    *_settings.__all__,
-    *_internal_circulation_rx.__all__,
-    *_wwt_sys.__all__,
+    *misc.__all__,
+    *ic_utils.__all__,
+    *pipe.__all__,
     )

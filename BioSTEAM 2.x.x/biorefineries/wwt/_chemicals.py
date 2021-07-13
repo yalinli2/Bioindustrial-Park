@@ -21,6 +21,7 @@ import thermosteam as tmo
 from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 
 __all__ = (
+    'auom',
     'default_insolubles',
     'get_insoluble_IDs',
     'get_soluble_IDs',

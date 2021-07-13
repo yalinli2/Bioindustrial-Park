@@ -22,9 +22,9 @@ from biorefineries import (
 
 #!!! Need to enable relative importing
 from _chemicals import create_cs_chemicals
-from _utils import kph_to_tpd, get_MESP
 from _settings import cs_price, load_cs_settings
 from _wwt_sys import create_wastewater_treatment_system
+from utils import kph_to_tpd, get_MESP
 
 
 # %%
@@ -139,6 +139,7 @@ u = F.unit
 cornstover_sys.simulate()
 
 WWT_units = [i for i in u if i.ID[1:3]=='60']
+WWT_costs = sum(i.purchase_cost for i in WWT_units)
 OSBL_units = (*WWT_units, u.CWP, u.CT, u.PWC, u.ADP,
               u.T701, u.T702, u.P701, u.P702, u.M701, u.FT,
               u.CSL_storage, u.DAP_storage, u.BT)
@@ -151,5 +152,24 @@ print(f'\n\nIRR = {cornstover_tea.IRR:.0%}')
 MESP_old = get_MESP(cs.ethanol, cs.cornstover_tea, 'old cs sys')
 MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 
+
+# %%
+
+# =============================================================================
+# Backup codes for checks
+# =============================================================================
+
+# # C/N ratio
 # from _utils import get_CN_ratio
 # R601_CN = get_CN_ratio(u.R601._inf)
+
+# # Methane production
+# from _utils import get_digestable_chemicals
+# BD_dct = {k.ID: 1. for k in get_digestable_chemicals(chems)}
+# u.R601.biodegradability = BD_dct
+# u.R601._refresh_rxns(X_biogas=0.86, X_growth=0.05)
+# get_MESP(ethanol, cornstover_tea, '')
+# # About 5481, vs. 5681 from Humbird, about 3-4% less,
+# # might be due to the different CH4/CO2 ratios in the biogas production reaction,
+# # Humbird assumed 51%:49% (1.04) CH4:CO2 on a molar basis, here is about 1
+# u.R601.imass['CH4']

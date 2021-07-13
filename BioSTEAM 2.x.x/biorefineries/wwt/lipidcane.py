@@ -21,9 +21,9 @@ from biorefineries import (
 
 #!!! Need to enable relative importing
 from _chemicals import create_lc_chemicals
-from _utils import kph_to_tpd, get_MESP
 from _settings import lc_price, new_price, load_lc_settings
 from _wwt_sys import create_wastewater_treatment_system
+from utils import kph_to_tpd, get_MESP
 
 
 # %%

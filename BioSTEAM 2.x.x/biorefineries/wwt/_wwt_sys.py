@@ -40,7 +40,7 @@ from thermosteam import Stream, separations
 
 #!!! Need to enable relative importing
 from _chemicals import default_insolubles, get_insoluble_IDs, get_soluble_IDs
-from _utils import (
+from utils import (
     auom,
     get_BD_dct,
     compute_stream_COD,
@@ -48,7 +48,7 @@ from _utils import (
     get_MB_split,
     )
 from _settings import new_price
-from _ic import IC
+from _internal_circulation_rx import InternalCirculationRx
 
 _MGD_2_m3hr = auom('gallon').conversion_factor('m3')*1e6/24
 _GPM_2_m3hr = auom('gallon').conversion_factor('m3')*60
@@ -293,12 +293,9 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     # Mix waste liquids for treatment
     M601 = bst.units.Mixer('M601', ins=wwt_streams)
 
-    R601 = IC('R601', ins=(M601-0, 'recycled_sludge'),
-              outs=(biogas, 'IC_eff', 'IC_sludge'), method=IC_method)
-    R601_S = bst.units.Splitter('R601_S', ins=R601-2,
-                                outs=('recycled_AD_sludge', 'wasted_AD_sludge'),
-                                split=R601.recycle_ratio)
-    R601_S-0-1-R601
+    R601 = InternalCirculationRx('R601', ins=M601-0,
+                                 outs=(biogas, 'IC_eff', 'IC_sludge'),
+                                 method=IC_method)
 
     R602 = AerobicDigestion('R602',
                             ins=(R601-1, '', caustic_R602,
@@ -317,7 +314,7 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
                               split=0.96)
 
     # S603 = BeltThickener('S603', ins=(R601-2, S602-1),
-    S603 = BeltThickener('S603', ins=(R601_S-1, S602-1),
+    S603 = BeltThickener('S603', ins=(R601-2, S602-1),
                          outs=('S603_centrate', 'S603_solids'))
 
     # Sludge centrifuge to separate water (centrate) from sludge

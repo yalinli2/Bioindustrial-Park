@@ -12,7 +12,8 @@
 
 '''
 TODO:
-    - Sludge recycling ratio, now assuming 0.1
+    - Set a maximum on Xw (or Xe?), then increase the Qw if Xw is too high
+    - Add a biogas blower, emergency flare, pumps, etc. (look at the Humbird report)
     - C/N ratio, George's analysis shows it's very high
         - About 16, looks good
     - Consider sulfate and sulfide
@@ -24,14 +25,14 @@ import biosteam as bst
 import thermosteam as tmo
 from biosteam.exceptions import DesignError
 #!!! Need to enable relative importing
-from _utils import (
+from utils import (
     get_BD_dct,
     compute_stream_COD,
     get_digestion_rxns,
     IC_purchase_cost_algorithms
     )
 
-__all__ = ('IC',)
+__all__ = ('InternalCirculationRx',)
 
 def _check_if_relevant(attr, method, relevant_method):
     if not relevant_method in method:
@@ -42,7 +43,7 @@ def _check_if_relevant(attr, method, relevant_method):
 
 # %%
 
-class IC(bst.MixTank):
+class InternalCirculationRx(bst.MixTank):
     '''
     Internal circulation (IC) reactor for anaerobic digestion (AD),
     including a high-rate bottom reactor for rapid organic removal and
@@ -94,11 +95,6 @@ class IC(bst.MixTank):
         caused by the rising force of the generated biogas.
     T : float
         Temperature of the reactor.
-    recycle_ratio : float
-        Fraction of the waste sludge will be recycled.
-
-        .. note ::
-            This will be passed on to the splitter unit immediately after IC.
     kwargs : dict
         Other keyword arguments (e.g., Fxb, Fxt).
 
@@ -117,13 +113,11 @@ class IC(bst.MixTank):
     .. [3] Tchobanoglous et al., Wastewater Engineering: Treatment and Resource Recovery,
     5th ed.; McGraw-Hill Education: New York, 2013.
     '''
-    _N_ins = 2
+    _N_ins = 1
     _N_outs = 3
-    _ins_size_is_fixed = True
-    _outs_size_is_fixed = True
 
     # Assumptions
-    _q_Qw = 0.05
+    _q_Qw = 0.01
     _q_Xw = 1.5
     _mu_max = 0.01
     _b = 0.00083
@@ -134,16 +128,15 @@ class IC(bst.MixTank):
     _default_vessel_type = 'IC'
     _default_vessel_material = 'Stainless steel'
     purchase_cost_algorithms = IC_purchase_cost_algorithms
-    compute_stream_COD = compute_stream_COD
 
     # Heating utilities
     auxiliary_unit_names = ('heat_exchanger',)
 
+
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  method='lumped-Xw', OLRall=1.25, biodegradability={}, Y=0.07,
                  vessel_type='IC', vessel_material='Stainless steel',
-                 V_wf=0.8, kW_per_m3=0., T=35+273.15,
-                 recycle_ratio=0.1, **kwargs):
+                 V_wf=0.8, kW_per_m3=0., T=35+273.15, **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.method = method
         self.OLRall = OLRall
@@ -155,32 +148,40 @@ class IC(bst.MixTank):
         self.vessel_material = vessel_material
         self.kW_per_m3 = kW_per_m3
         self.T = T
-        self.recycle_ratio = 0.1
 
         # Initiate the attributes
         self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
         self.heat_utilities = hx.heat_utilities
-        self._digestion_rxns = None
+        # self._digestion_rxns = None
 
-        # Note that the reaction conversion need to be adjusted when using
-        self._decay_rxn = self.chemicals.WWTsludge.get_combustion_reaction()
+        # Reactions
+        self._refresh_rxns()
+
+        # Conversion will be adjusted in the _run function
+        self._decay_rxn = self.chemicals.WWTsludge.get_combustion_reaction(conversion=0.)
 
         for k, v in kwargs.items():
             setattr(self, k, v)
 
 
-    def get_digestion_rxns(self):
-        '''Refresh the auto-generated biogas and growth reactions.'''
-        rxns = get_digestion_rxns(self.ins[0], self.biodegradability,
-                                  1-self.Y, self.Y, 'WWTsludge')
-        self._i_rm = rxns.X_net.data
-        return rxns
+    def _refresh_rxns(self, X_biogas=None, X_growth=None):
+        X_biogas = X_biogas if X_biogas else 1 - self.Y
+        X_growth = X_growth if X_growth else self.Y
+
+        self._biogas_rxns = get_digestion_rxns(self.ins[0], self.biodegradability,
+                                               X_biogas, 0., 'WWTsludge')
+        self._growth_rxns = get_digestion_rxns(self.ins[0], self.biodegradability,
+                                               0., X_growth, 'WWTsludge')
+        self._i_rm = self._biogas_rxns.X_net.data + self._growth_rxns.X_net.data
+
+
+    @staticmethod
+    def compute_COD(stream):
+        return compute_stream_COD(stream)
 
 
     def _run(self):
-        inf = tmo.Stream()
-        inf.mix_from(self.ins)
-        self._inf = inf.copy()
+        inf = self._inf = self.ins[0].copy()
         biogas, eff, waste  = self.outs
 
         # Initiate the streams
@@ -189,48 +190,46 @@ class IC(bst.MixTank):
         biogas.empty()
 
         inf.split_to(waste, eff, self.q_Qw)
-        digestion_rxns = self.digestion_rxns
-        digestion_rxns(inf.mol)
+        biogas_rxns = self.biogas_rxns
+        growth_rxns = self.growth_rxns
+
+        growth_rxns(inf.mol)
+        biogas_rxns(inf.mol)
+
+        gas = tmo.Stream(phase='g', T = self.T)
+        gas.receive_vent(inf)
         Se = compute_stream_COD(inf)
 
+        Qi, Si, Xi, Qe, Y = self.Qi, self.Si, self.Xi, self.Qe, self.Y
         method = self.method.lower()
         if method == 'separate':
-            run_inputs = (self.Qi, self.Si, self.Xi, self.Qe, Se, self.Vliq,
-                          self.Y, self.mu_max, self.b, self.Fxb, self.Fxt)
+            run_inputs = (Qi, Si, Xi, Qe, Se, self.Vliq, Y,
+                          self.mu_max, self.b, self.Fxb, self.Fxt)
             Xw, Xe = self._run_separate(run_inputs)
 
-            rxn_dct = {
-                'waste': (self.Sw, waste),
-                'eff': (self.Se, eff)
-                }
-            for k, v in rxn_dct.items():
-                # to calculate decay conversion
-                stream_copy = v[1].copy()
-                digestion_rxns(v[1].mol)
-                # This is biomass change for mu_max-b
-                net_sludge = v[1].imol['WWTsludge'] - stream_copy.imol['WWTsludge']
-
-                stream_copy.empty()
-                # Adjust to the amount undergoes decay
-                stream_copy.imol['WWTsludge'] = \
-                    net_sludge/(self.mu_max-self.b)*self.b
-
-                self.decay_rxn.force_reaction(stream_copy.mol)
-                stream_copy.imol['O2'] = 0
-                v[1].mix_from((v[1], stream_copy))
-
         else:
-            Xe = inf.imass['WWTsludge'] / (1+self.q_Xw)
-            Xw = inf.imass['WWTsludge'] - Xe
-            digestion_rxns(waste.mol)
-            digestion_rxns(eff.mol)
-
-        # Changes due to biomass settling
-        eff.imass['WWTsludge'] = Xe
-        waste.imass['WWTsludge'] = Xw
+            Xe = (Qi*Xi+Qi*(Si-Se)*Y)/(Qe+(Qi-Qe)*self.q_Xw)
+            Xw = Xe * self.q_Xw
+            for rxns in (growth_rxns, biogas_rxns):
+                rxns(waste.mol)
+                rxns(eff.mol)
+            # digestion_rxns(waste.mol)
+            # digestion_rxns(eff.mol)
 
         biogas.receive_vent(eff, accumulate=True)
         biogas.receive_vent(waste, accumulate=True)
+
+        eff.imass['WWTsludge'] = Xe*self.Qe
+        waste.imass['WWTsludge'] = Xw*self.Qw
+
+        diff = sum(i.imol['WWTsludge'] for i in self.outs) - inf.imol['WWTsludge']
+        if diff >0:
+            decay_rxn = self.decay_rxn
+            decay_rxn._X = diff / inf.imol['WWTsludge']
+
+            for i in (eff, waste):
+                decay_rxn.force_reaction(i.mol)
+                i.imol['O2'] = max(0, i.imol['O2'])
 
 
     def _run_separate(self, run_inputs):
@@ -310,7 +309,7 @@ class IC(bst.MixTank):
     def _cost(self):
         bst.MixTank._cost(self)
 
-        inf = self._inf
+        inf = self.ins[0]
         H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=self.T, P=101325)
         duty = -(inf.H - H_at_T)
         self.heat_exchanger.simulate_as_auxiliary_exchanger(duty, inf)
@@ -325,12 +324,12 @@ class IC(bst.MixTank):
         if not i.lower() in ('separate', 'lumped'):
             raise ValueError('`method` can only be "separated", or "lumped", '
                              f'not "{i}".')
-        self._method = i
+        self._method = i.lower()
 
     @property
     def Qi(self):
         '''[float] Influent volumetric flow rate, [m3/hr].'''
-        return self._inf.F_vol
+        return self.ins[0].F_vol
 
     @property
     def Qe(self):
@@ -348,7 +347,7 @@ class IC(bst.MixTank):
         [float] Influent substrate (i.e., biodegradable chemicals)
         concentration, [kg/m3].
         '''
-        return compute_stream_COD(self._inf)
+        return self.compute_COD(self.ins[0])
 
     @property
     def Se(self):
@@ -356,7 +355,7 @@ class IC(bst.MixTank):
         [float] Effluent substrate (i.e., biodegradable chemicals)
         concentration, [kg/m3].
         '''
-        return compute_stream_COD(self.outs[1])
+        return self.compute_COD(self.outs[1])
 
     @property
     def Sw(self):
@@ -364,7 +363,7 @@ class IC(bst.MixTank):
         [float] Waste flow substrate (i.e., biodegradable chemicals)
         concentration, [kg/m3].
         '''
-        return compute_stream_COD(self.outs[2])
+        return self.compute_COD(self.outs[2])
 
     @property
     def organic_rm(self):
@@ -373,12 +372,12 @@ class IC(bst.MixTank):
 
     @property
     def Xi(self):
-        '''[float] Effluent biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
-        return self._inf.imass['WWTsludge']/self._inf.F_vol
+        '''[float] Influent biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
+        return self.ins[0].imass['WWTsludge']/self.ins[0].F_vol
 
     @property
     def Xe(self):
-        '''[float] Influent biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
+        '''[float] Effluent  biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
         return self.outs[1].imass['WWTsludge']/self.outs[1].F_vol
 
     @property
@@ -388,9 +387,7 @@ class IC(bst.MixTank):
 
     @property
     def OLRall(self):
-        '''
-        [float] Overall organic loading rate, [kg COD/m3/hr].
-        '''
+        '''[float] Overall organic loading rate, [kg COD/m3/hr].'''
         return self._OLRall
     @OLRall.setter
     def OLRall(self, i):
@@ -584,23 +581,37 @@ class IC(bst.MixTank):
 
         return  self.Xe*self.Vliq / (self.q_Qw*self.q_Xw+self.Qe*self.Xe)
 
+    # @property
+    # def digestion_rxns(self):
+    #     '''
+    #     [:class:`tmo.ParallelReaction`] Anaerobic digestion reactions
+    #     (biogas production and biomass growth).
+    #     '''
+    #     return self._digestion_rxns
+
+
     @property
-    def digestion_rxns(self):
+    def biogas_rxns(self):
         '''
-        [:class:`tmo.ParallelReaction`] Anaerobic digestion reactions
-        (biogas production and biomass growth).
+        [:class:`tmo.ParallelReaction`] Biogas production reactions.
         '''
-        if self._digestion_rxns is None:
-            self._digestion_rxns = self.get_digestion_rxns()
-        return self._digestion_rxns
+        return self._biogas_rxns
+
+
+    @property
+    def growth_rxns(self):
+        '''
+        [:class:`tmo.ParallelReaction`] Biomass (WWTsludge) growth reactions.
+        '''
+        return self._growth_rxns
+
 
     @property
     def decay_rxn(self):
         '''
-        [:class:`tmo.Reaction`] Biomass endogeneous decay,
-        only relevant when the "separate" method is used.
+        [:class:`tmo.Reaction`] Biomass endogeneous decay.
 
         .. note::
-            Conversion is defaulted to 100%, and needs to be adjusted when used.
+            Conversion is adjusted in the _run function.
         '''
-        return _check_if_relevant(self._decay_rxn, self.method, 'separate')
+        return self._decay_rxn

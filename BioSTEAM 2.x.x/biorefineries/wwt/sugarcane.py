@@ -19,9 +19,9 @@ from biorefineries import sugarcane as sc
 
 #!!! Need to enable relative importing
 from _chemicals import create_sc_chemicals
-from _utils import kph_to_tpd, get_MESP
 from _settings import new_price, load_sc_settings
 from _wwt_sys import create_wastewater_treatment_system
+from utils import kph_to_tpd, get_MESP
 
 
 # %%

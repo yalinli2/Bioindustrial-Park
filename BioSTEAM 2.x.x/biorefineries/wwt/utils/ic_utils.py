@@ -9,41 +9,27 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
-'''
-Util functions
-'''
+'''Util functions for internal circulation reactor design.'''
 
 import numpy as np
-import biosteam as bst
 from chemicals.elements import molecular_weight
-from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 from thermosteam.reaction import (
     Reaction as Rxn,
     ParallelReaction as PRxn
     )
-from biosteam.utils import (
-    ExponentialFunctor,
-    remove_undefined_chemicals,
-    default_chemical_dict
-    )
+from biosteam.utils import ExponentialFunctor
 from biosteam.units.design_tools.tank_design import (
     mix_tank_purchase_cost_algorithms,
     TankPurchaseCostAlgorithm
     )
-from biorefineries.cornstover import ethanol_density_kggal
 from _chemicals import default_insolubles
 
 __all__ = (
-    'auom',
     'get_BD_dct',
     'compute_stream_COD',
     'get_CN_ratio',
     'get_digestion_rxns',
     'IC_purchase_cost_algorithms',
-    'get_MB_split',
-    'kph_to_tpd',
-    'ethanol_density_kggal',
-    'get_MESP',
     )
 
 
@@ -78,7 +64,7 @@ def get_COD_stoichiometry(chemical):
 
     excluded = ('O2', 'CO2', 'H2O', 'NH3', 'H2SO4', 'P4O10',
                 *default_insolubles)
-    if chemical.ID in excluded:
+    if chemical.ID in excluded or chemical.locked_state=='g':
         return dict.fromkeys(excluded, 0)
 
     dct = {
@@ -94,6 +80,12 @@ def get_COD_stoichiometry(chemical):
     return dct
 
 
+def get_digestable_chemicals(chemicals):
+    chems = [chemicals[i.ID] for i in chemicals
+             if get_COD_stoichiometry(i)['O2']!=0]
+    return chems
+
+
 def get_BMP_stoichiometry(chemical):
     r'''
     Compute the theoretical biochemical methane potential (BMP) in
@@ -105,9 +97,10 @@ def get_BMP_stoichiometry(chemical):
     '''
     Xs = nC, nH, nO, nN, nS, nP = get_CHONSP(chemical)
 
-    default_IDs = ('H2O', 'CH4', 'CO2', 'NH3', 'H2S')
-    if chemical.ID in default_IDs:
-        return dict.fromkeys(default_IDs, 0)
+    excluded = ('H2O', 'CH4', 'CO2', 'NH3', 'H2S',
+                   *default_insolubles)
+    if chemical.ID in excluded or chemical.locked_state=='g':
+        return dict.fromkeys(excluded, 0)
 
     dct = {
         chemical.ID: -1. if sum(Xs)!=0 else 0.,
@@ -123,7 +116,8 @@ def get_BMP_stoichiometry(chemical):
 
 # Biodegradability, 0.87 from glucose (treated as the maximum value)
 def get_BD_dct(chemicals, default_BD=0.87, **kwargs):
-    BD_dct = dict.fromkeys([i.ID for i in chemicals], default_BD)
+    BD_dct = dict.fromkeys([i.ID for i in get_digestable_chemicals(chemicals)],
+                           default_BD)
 
     # Based on Kontos thesis
     BD_dct['AceticAcid'] = 0.87
@@ -163,8 +157,7 @@ def compute_stream_COD(stream):
     chems = stream.chemicals
     mol = stream.mol
     iCOD = np.array([-get_COD_stoichiometry(i)['O2'] for i in chems])
-
-    COD = (mol*iCOD).sum() / stream.F_vol * molecular_weight({'O': 2})
+    COD = (mol*iCOD).sum()*molecular_weight({'O': 2}) / stream.F_vol
     return COD
 
 
@@ -236,65 +229,3 @@ ic = TankPurchaseCostAlgorithm(
     material='Stainless steel')
 
 IC_purchase_cost_algorithms['IC'] = ic
-
-
-# Split for the membrane bioreactor
-def get_MB_split(chemicals, split_dct=None):
-    # Copied from the cornstover biorefinery,
-    # which is based on the 2011 NREL report (Humbird et al.)
-    split = dict(
-        Water=0.1454,
-        Glycerol=0.125,
-        LacticAcid=0.145,
-        SuccinicAcid=0.125,
-        HNO3=0.1454,
-        Denaturant=0.125,
-        DAP=0.1454,
-        AmmoniumAcetate=0.145,
-        AmmoniumSulfate=0.1454,
-        H2SO4=0.1454,
-        NaNO3=0.1454,
-        Oil=0.125,
-        N2=0.1351,
-        NH3=0.1579,
-        O2=0.15,
-        CO2=0.1364,
-        Xylose=0.25,
-        Sucrose=0.125,
-        Mannose=0.125,
-        Galactose=0.125,
-        Arabinose=0.125,
-        Extract=0.145,
-        NaOH=0.1454,
-        SolubleLignin=0.145,
-        GlucoseOligomer=0.1429,
-        GalactoseOligomer=0.1429,
-        MannoseOligomer=0.1429,
-        XyloseOligomer=0.1429,
-        ArabinoseOligomer=0.1429,
-        Xylitol=0.125,
-        Cellobiose=0.125,
-        Cellulase=0.145
-        )
-    remove_undefined_chemicals(split, chemicals)
-    default_chemical_dict(split, chemicals, 0.15, 0.125, 0.145)
-
-    if split_dct is not None:
-        split.update(split_dct)
-
-    return split
-
-
-def get_MESP(ethanol, tea, tea_name):
-    bst.settings.set_thermo(ethanol.chemicals)
-    tea.system.simulate()
-    ethanol.price = tea.solve_price(ethanol)
-    ethanol_price_gal = ethanol.price * ethanol_density_kggal
-    print(f'MESP of {tea_name} is ${ethanol_price_gal:.2f}/gal.')
-    return ethanol_price_gal
-
-
-def kph_to_tpd(stream):
-    dry_mass = stream.F_mass - stream.imass['Water']
-    factor = auom('kg').conversion_factor('ton')/auom('hr').conversion_factor('day')
-    return dry_mass*factor
