@@ -31,15 +31,34 @@ from biosteam.exceptions import DesignError
 #!!! Need to enable relative importing
 from utils import (
     auom,
-    get_BD_dct,
     compute_stream_COD,
+    format_str,
+    get_BD_dct,
     )
 
 __all__ = ('AnMBR',)
 
 _ft_to_m = auom('ft').conversion_factor('m')
 _ft3_to_m3 = auom('ft3').conversion_factor('m3')
+_m3_to_gal = auom('m3').conversion_factor('gal')
+_cmh_to_mgd = _m3_to_gal * 24 / 1e6 # cubic meter per hour to million gallon per day
 
+_d_to_A = lambda d: math.pi/4*(d**2)
+_A_to_d = lambda A: ((4*A)/math.pi)**0.5
+
+
+
+def _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, A_AF, V_m_AF):
+    # X-sectional area of each filter, [m2]
+    A_AF = (Q_cmd/24) * (1+R_AF) / N_AF / HL_AF
+    # Diameter of each filter, [m]
+    d_AF = (4*A_AF/math.pi) ** 0.5
+    # Depth of each filter, [m]
+    D_AF = V_m_AF / A_AF
+    return d_AF, D_AF
+
+
+# %%
 
 class AnMBR(bst.Unit):
     '''
@@ -79,7 +98,7 @@ class AnMBR(bst.Unit):
     Energy Environ. Sci. 2016, 9 (3), 1102–1112.
     https://doi.org/10.1039/C5EE03715H.
     '''
-    _N_ins = 2
+    _N_ins = 4
     _N_outs = 3
 
     HRT = 10 # hydraulic retention time, [hr]
@@ -96,16 +115,16 @@ class AnMBR(bst.Unit):
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  reactor_type='CSTR',
-                 aerobic_filteration=False,
                  membrane_configuration='cross-flow',
                  membrane_type='multi-tube',
                  membrane_material='ceramic',
+                 include_aerobic_filteration=False,
                  add_GAC=False,
                  include_degassing_membrane=False,
                  **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.reactor_type = reactor_type
-        self.aerobic_filteration = aerobic_filteration
+        self.include_aerobic_filteration = include_aerobic_filteration
         self.membrane_configuration = membrane_configuration
         self.membrane_type = membrane_type
         self.membrane_material = membrane_material
@@ -157,6 +176,24 @@ class AnMBR(bst.Unit):
                 raise DesignError(f'Only plastic materials {plastics} and "ceramic"'
                                   'allowed for "multi-tube" membrane',
                                   f'not "{m_material}".')
+
+
+
+    def _run(self):
+        inf, recycled, naocl, citric = self.ins
+
+
+        ### Clean in place (CIP) ###
+        # 2200 gal/yr/mgd of 12.5 wt% solution, 15% by volume
+        #!!! The original codes seem to have a bug
+        dose_naocl = (2200*self.Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
+        naocl.imass['NaOCl'] = dose_naocl * 0.125
+        naocl.imass['H2O'] = dose_naocl - naocl.imass['NaOCl']
+
+        # 600 gal/yr/mgd of 100% solution, 13.8 lb/gal
+        citric.imass['CitricAcid'] = (600*self.Q_mgd) * \
+            (13.8*auom('lb').conversion_factor('kg')) / 365 / 24 # kg/hr solution
+
 
 
     #!!! No sparging if submerged and using GAC
@@ -217,7 +254,110 @@ class AnMBR(bst.Unit):
 
 
 
+    def _design_membrane(self, Q_mgd):
+        m_type = format_str(self.membrane_type)
+        func = getattr(self, f'_design_{m_type}_membrane')
+        m_tot, Q_R_mgd = func()
 
+
+
+    def _design_flat_sheet_membrane(self):
+        pass
+
+
+    def _design_hollow_fiber_membrane(self):
+        pass
+
+
+    def _design_multi_tube_membrane(
+            self,Q_mgd,
+            T_bw, # backwashing time per day, [hr]
+            v_xflow, # cross-flow velocity, [m/s]
+            N_train,
+            cas_per_tank, # number of membrane cassette per tank
+            mod_per_cas, # number of membrane module per cassette
+            module_SA
+            ):
+        # Cross-flow flow rate per module,
+        # based on manuf. specs. for compact 33, [m3/hr]
+        Q_xflow = 53.5 * v_xflow
+
+        N_tot = mod_per_cas * cas_per_tank * N_train # total number of modules
+
+        # Total retentate flow rate, [m3/hr]
+        Q_R_cmh = N_tot * Q_xflow
+        Q_R_mgd = Q_R_cmh * _cmh_to_mgd # [mgd]
+
+        M_tot = N_tot * 263.05
+        # # 263.05 is volume of material for each membrane tube, [m3]
+        # #      L_tube               OD        ID
+        # V_tube = 3 * math.pi/4 * ((6e-3)**2-(5.2e-3)**2)
+        # V_SU = 700 * V_tube # V for each small unit [m3]
+        # M_SU = 1.78*10e3 * V_SU # mass = density*volume, [kg/m3]
+
+        return Q_R_mgd, M_tot
+
+
+    def _design_anaerobic_filter(
+            self, Q_mgd,
+            Ss, # readily biodegradable (soluble) substrate concentration, [kg COD/m3]
+            Sp, # slowly biodegradable (particulate) substrate concentration, [kg COD/m3]
+            OLR_AF, # organic loading rate, [kg-COD/m3/day]
+            HL_AF, # hydraulic loading rate, [m3/m2/hr]
+            R_AF # recirculation ratio
+            ):
+
+        ### Filter material ###
+        N_AF = 2
+        Q_cmd = Q_mgd *1e6/_m3_to_gal # [m3/day]
+        # Volume of packing media in each filter, [m3]
+        V_m_AF = (Q_cmd/N_AF) * (Ss+Sp) / OLR_AF
+        # Diameter (d) / depth (D) of each filter, [m]
+        d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
+
+        while D_AF > 6: # assumed maximum depth assumption, [m]
+            R_AF = R_AF + 0.1;
+            d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
+
+            while d_AF > 12: # assumed maximum diameter, [m]
+                N_AF = N_AF + 1;
+                d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF)
+
+        # Unit conversion
+        d_AF /= _ft_to_m # [ft]
+        D_AF /= _ft_to_m # [ft]
+        V_m_AF /= _ft3_to_m3 # [ft3]
+
+        ### Concrete material ###
+        # External wall concrete, [ft3]
+        # 6/12 is wall thickness and 3 is freeboard
+        VWC_AF = N_AF * 6/12 * math.pi * d_AF * (D_AF+3)
+        VWC_AF *= N_AF
+        # Floor slab concrete, [ft3]
+        # 8/12 is slab thickness
+        VSC_AF = _d_to_A(d_AF)+ 8/12 * _d_to_A(d_AF)
+        VSC_AF *= N_AF
+
+        ### Excavation ###
+        SL = 1.5 # slope = horizontal/vertical
+        CA = 3 # construction Access, [ft]
+        #  Excavation of pump building
+        PBL, PBW, PBD = 50, 30, 10 # pump building length, width, depth, [ft]
+        Area_B_P = (PBL+2*CA) * (PBW+2*CA); # bottom area of frustum, [ft2]
+        Area_T_P = (PBL+2*CA+PBW*SL) * (PBW+2*CA+PBD*SL) # top area of frustum, [ft2]
+        VEX_PB = 0.5 * (Area_B_P+Area_T_P) * PBD # total volume of excavaion, [ft3]
+
+        return N_AF, d_AF, D_AF, V_m_AF, VWC_AF, VWC_AF, VEX_PB
+
+
+    def _design_packing_media(self, V):
+        # Assume 50%/50% wt/wt LDPE/HDPE
+        # 0.9 is void fraction, usually 85% - 95% for plastic packing media
+        # 925 is density of LDPE (910-940), [kg/m3]
+        # 950 is density of LDPE (930-970), [kg/m3]
+        # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
+        # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
+        return 46.25*V, 47.5*V
 
 
 
@@ -241,6 +381,7 @@ class AnMBR(bst.Unit):
         return self._membrane_configuration
     @membrane_configuration.setter
     def membrane_configuration(self, i):
+        i = 'cross-flow' if i.lower() in ('cross flow', 'crossflow') else i
         if not i.lower() in ('cross-flow', 'submerged'):
             raise ValueError('`membrane_configuration` can only be "cross-flow", '
                              f'or "submerged", not "{i}".')
@@ -256,21 +397,7 @@ class AnMBR(bst.Unit):
         return self._membrane_type
     @membrane_type.setter
     def membrane_type(self, i):
-        if not i.lower() in ('hollow fiber', 'flat sheet', 'multi-tube'):
-            raise ValueError('`membrane_type` can only be "hollow fiber", '
-                             f'"flat sheet", or "multi-tube", not "{i}".')
-        self._membrane_type = i.lower()
-
-    @property
-    def membrane_type(self):
-        '''
-        [str] Can be "hollow fiber" ("submerged" configuration only),
-        "flat sheet" (either "cross-flow" or "submerged" configuration),
-        or "multi-tube" ("cross-flow" configuration only).
-        '''
-        return self._membrane_type
-    @membrane_type.setter
-    def membrane_type(self, i):
+        i = 'multi-tube' if i.lower() in ('multi tube', 'multitube') else i
         if not i.lower() in ('hollow fiber', 'flat sheet', 'multi-tube'):
             raise ValueError('`membrane_type` can only be "hollow fiber", '
                              f'"flat sheet", or "multi-tube", not "{i}".')
@@ -324,3 +451,16 @@ class AnMBR(bst.Unit):
             W_PB = 0.
 
         return W_PB
+
+    # @property
+    # def Q_mgd(self):
+    #     '''
+    #     [float] Volumetric flow rate in million gallon per day, [mgd].
+    #     Will return total volumetric flow through the unit if not provided.
+    #     '''
+    #     if self._Q_mgd:
+    #         return self._Q_mgd
+    #     return self.ins[0].F_vol*_m3_to_gal*24/1e6
+    # @Q_mgd.setter
+    # def Q_mgd(self, i):
+    #     self._Q_mgd = i

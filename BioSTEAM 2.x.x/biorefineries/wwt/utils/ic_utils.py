@@ -26,6 +26,7 @@ from _chemicals import default_insolubles
 
 __all__ = (
     'get_BD_dct',
+    'get_digestable_chemicals',
     'compute_stream_COD',
     'get_CN_ratio',
     'get_digestion_rxns',

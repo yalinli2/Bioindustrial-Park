@@ -21,11 +21,18 @@ from biorefineries.cornstover import ethanol_density_kggal
 
 __all__ = (
     'auom',
-    'get_MB_split',
-    'kph_to_tpd',
     'ethanol_density_kggal',
+    'format_str',
+    'get_MB_split',
     'get_MESP',
+    'kph_to_tpd',
     )
+
+
+def format_str(string):
+    string = string.replace(' ', '_')
+    string = string.replace('-', '_')
+    return string
 
 
 # Split for the membrane bioreactor

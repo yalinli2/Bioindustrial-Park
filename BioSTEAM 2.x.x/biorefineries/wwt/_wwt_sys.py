@@ -43,6 +43,7 @@ from _chemicals import default_insolubles, get_insoluble_IDs, get_soluble_IDs
 from utils import (
     auom,
     get_BD_dct,
+    get_digestable_chemicals,
     compute_stream_COD,
     get_digestion_rxns,
     get_MB_split,
@@ -94,15 +95,13 @@ class AerobicDigestion(Unit):
         # Based on P49 in ref [1], 96% of remaining soluble organic matter
         # is removed after aerobic digestion, of which 74% is converted to
         # water and CO2 and 22% to cell mass
-        chems = self.chemicals
+        chems = get_digestable_chemicals(self.chemicals)
         growth_rxns = get_digestion_rxns(self.ins[0],
-                                         BD=get_BD_dct(chems),
+                                         BD=get_BD_dct(self.chemicals),
                                          X_biogas=0., X_growth=0.22,
                                          biomass_ID='WWTsludge')
-
-        combustion_rxns = chems.get_combustion_reactions()
-        self.digestion_rxns = ParallelRxn([*[i*0.74 for i in combustion_rxns
-                                             if i.reactant in growth_rxns.reactants],
+        self.digestion_rxns = ParallelRxn([*[i.get_combustion_reaction()*0.74
+                                             for i in chems],
                                            *growth_rxns])
 
         #                                 Reaction definition       Reactant Conversion

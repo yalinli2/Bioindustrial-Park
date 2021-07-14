@@ -18,10 +18,8 @@ https://github.com/BioSTEAMDevelopmentGroup/Bioindustrial-Park/blob/master/BioST
 '''
 
 import thermosteam as tmo
-from thermosteam.units_of_measure import AbsoluteUnitsOfMeasure as auom
 
 __all__ = (
-    'auom',
     'default_insolubles',
     'get_insoluble_IDs',
     'get_soluble_IDs',
@@ -48,7 +46,7 @@ def get_soluble_IDs(chemicals, insolubles):
     return tuple(i.ID for i in chemicals if not i.ID in insolubles)
 
 
-_cal2joule = auom('cal').conversion_factor('J')
+_cal2joule = 4.184 # auom('cal').conversion_factor('J')
 
 def add_wwt_chemicals(chemicals):
     chems = chemicals.copy()
@@ -58,7 +56,7 @@ def add_wwt_chemicals(chemicals):
             chemical = tmo.Chemical(ID, **data)
             if phase:
                 chemical.at_state(phase)
-                chemical.phase_ref = phase
+                # chemical.phase_ref = phase # causes trouble for HCl
             chems.append(chemical)
             return chemical
 
@@ -73,11 +71,15 @@ def add_wwt_chemicals(chemicals):
     chemical_database('SO2', phase='g')
     chemical_database('NH4OH', search_ID='AmmoniumHydroxide', phase='l', Hf=-336719)
     chemical_database('H2SO4', phase='l')
+    chemical_database('HCl', phase='l')
     chemical_database('HNO3', phase='l', Hf=-41406*_cal2joule)
     chemical_database('NaOH', phase='l')
     chemical_database('NaNO3', phase='l', Hf=-118756*_cal2joule)
     chemical_database('Na2SO4', phase='l', Hf=-1356380)
     chemical_database('CaSO4', phase='s', Hf=-342531*_cal2joule)
+    chemical_database('NaOCl', phase='l', Hf=-347.1e3) # https://en.wikipedia.org/wiki/Sodium_hypochlorite
+    chemical_database('CitricAcid', phase='l', Hf=-347.1e3)
+
     chems.CaSO4.Cn.move_up_model_priority('Lastovka solid', 0)
 
     chemical_defined('WWTsludge', phase='s',
