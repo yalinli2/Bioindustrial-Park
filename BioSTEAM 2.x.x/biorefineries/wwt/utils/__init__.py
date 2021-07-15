@@ -11,16 +11,16 @@
 
 from . import (
     misc,
-    ic_utils,
-    pipe,
+    digestion,
+    construction,
     )
 
 from .misc import *
-from .ic_utils import *
-from .pipe import *
+from .digestion import *
+from .construction import *
 
 __all__ = (
     *misc.__all__,
-    *ic_utils.__all__,
-    *pipe.__all__,
+    *digestion.__all__,
+    *construction.__all__,
     )

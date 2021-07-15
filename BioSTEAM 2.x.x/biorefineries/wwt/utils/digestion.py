@@ -9,18 +9,13 @@
 # github.com/BioSTEAMDevelopmentGroup/biosteam/blob/master/LICENSE.txt
 # for license details.
 
-'''Util functions for internal circulation reactor design.'''
+'''Util functions for digestion reactions.'''
 
 import numpy as np
 from chemicals.elements import molecular_weight
 from thermosteam.reaction import (
     Reaction as Rxn,
     ParallelReaction as PRxn
-    )
-from biosteam.utils import ExponentialFunctor
-from biosteam.units.design_tools.tank_design import (
-    mix_tank_purchase_cost_algorithms,
-    TankPurchaseCostAlgorithm
     )
 from _chemicals import default_insolubles
 
@@ -30,7 +25,6 @@ __all__ = (
     'compute_stream_COD',
     'get_CN_ratio',
     'get_digestion_rxns',
-    'IC_purchase_cost_algorithms',
     )
 
 
@@ -214,19 +208,3 @@ def get_digestion_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
         return PRxn(biogas_rxns+growth_rxns)
 
     return []
-
-
-# Tank cost algorithms
-IC_purchase_cost_algorithms = mix_tank_purchase_cost_algorithms.copy()
-conventional = IC_purchase_cost_algorithms['Conventional']
-#!!! Need to check if the cost correlation still holds for the ranges beyond
-ic = TankPurchaseCostAlgorithm(
-    ExponentialFunctor(A=conventional.f_Cp.A,
-                       n=conventional.f_Cp.n),
-    V_min=np.pi/4*1.5**2*16, # 1.5 and 16 are the lower bounds of the width and height ranges in ref [1]
-    V_max=np.pi/4*12**2*25, # 12 and 25 are the lower bounds of the width and height ranges in ref [1]
-    V_units='m^3',
-    CE=conventional.CE,
-    material='Stainless steel')
-
-IC_purchase_cost_algorithms['IC'] = ic

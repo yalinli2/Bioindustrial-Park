@@ -62,11 +62,12 @@ class InternalCirculationRx(bst.MixTank):
             - OLRall, biodegradability, Y, q_Qw, and q_Xw
     OLRall : float
         Overall organic loading rate, [kg COD/m3/hr].
-    biodegradability : dict
-        Chemical removal
-        (chemicals not in the dict are conserved in this reactor).
+    biodegradability : float or dict
+        Biodegradability of chemicals,
+        when shown as a float, all biodegradable chemicals are assumped to have
+        the same degradability.
     Y : float
-        Biomass yield, [kg biomass/kg substrate COD].
+        Biomass yield, [kg biomass/kg consumed COD].
     q_Qw : float
         Ratio between the bottom reactor waste flow and the influent.
     q_Xw : float
@@ -321,65 +322,6 @@ class InternalCirculationRx(bst.MixTank):
         self._method = i.lower()
 
     @property
-    def Qi(self):
-        '''[float] Influent volumetric flow rate, [m3/hr].'''
-        return self.ins[0].F_vol
-
-    @property
-    def Qe(self):
-        '''[float] Effluent volumetric flow rate, [m3/hr].'''
-        return self.outs[1].F_vol
-
-    @property
-    def Qw(self):
-        '''[float] Waste flow volumetric flow rate, [m3/hr].'''
-        return self.outs[2].F_vol
-
-    @property
-    def Si(self):
-        '''
-        [float] Influent substrate (i.e., biodegradable chemicals)
-        concentration, [kg/m3].
-        '''
-        return self.compute_COD(self.ins[0])
-
-    @property
-    def Se(self):
-        '''
-        [float] Effluent substrate (i.e., biodegradable chemicals)
-        concentration, [kg/m3].
-        '''
-        return self.compute_COD(self.outs[1])
-
-    @property
-    def Sw(self):
-        '''
-        [float] Waste flow substrate (i.e., biodegradable chemicals)
-        concentration, [kg/m3].
-        '''
-        return self.compute_COD(self.outs[2])
-
-    @property
-    def organic_rm(self):
-        '''[float] Overall organic removal rate.'''
-        return 1 - self.Qe*self.Se/(self.Qi*self.Si)
-
-    @property
-    def Xi(self):
-        '''[float] Influent biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
-        return self.ins[0].imass['WWTsludge']/self.ins[0].F_vol
-
-    @property
-    def Xe(self):
-        '''[float] Effluent  biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
-        return self.outs[1].imass['WWTsludge']/self.outs[1].F_vol
-
-    @property
-    def Xw(self):
-        '''[float] Waste flow biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
-        return self.outs[2].imass['WWTsludge']/self.outs[2].F_vol
-
-    @property
     def OLRall(self):
         '''[float] Overall organic loading rate, [kg COD/m3/hr].'''
         return self._OLRall
@@ -422,7 +364,7 @@ class InternalCirculationRx(bst.MixTank):
     @property
     def Y(self):
         '''
-        [float] Biomass yield, [kg biomass/kg substrate COD].
+        [float] Biomass yield, [kg biomass/kg consumed COD].
         .. note::
             This yield is considered as the "synthesis"
 
@@ -570,15 +512,6 @@ class InternalCirculationRx(bst.MixTank):
 
         return  self.Xe*self.Vliq / (self.q_Qw*self.q_Xw+self.Qe*self.Xe)
 
-    # @property
-    # def digestion_rxns(self):
-    #     '''
-    #     [:class:`tmo.ParallelReaction`] Anaerobic digestion reactions
-    #     (biogas production and biomass growth).
-    #     '''
-    #     return self._digestion_rxns
-
-
     @property
     def biogas_rxns(self):
         '''
@@ -586,14 +519,12 @@ class InternalCirculationRx(bst.MixTank):
         '''
         return self._biogas_rxns
 
-
     @property
     def growth_rxns(self):
         '''
         [:class:`tmo.ParallelReaction`] Biomass (WWTsludge) growth reactions.
         '''
         return self._growth_rxns
-
 
     @property
     def decay_rxn(self):
@@ -604,3 +535,62 @@ class InternalCirculationRx(bst.MixTank):
             Conversion is adjusted in the _run function.
         '''
         return self._decay_rxn
+
+    @property
+    def Qi(self):
+        '''[float] Influent volumetric flow rate, [m3/hr].'''
+        return self.ins[0].F_vol
+
+    @property
+    def Qe(self):
+        '''[float] Effluent volumetric flow rate, [m3/hr].'''
+        return self.outs[1].F_vol
+
+    @property
+    def Qw(self):
+        '''[float] Waste flow volumetric flow rate, [m3/hr].'''
+        return self.outs[2].F_vol
+
+    @property
+    def Si(self):
+        '''
+        [float] Influent substrate (i.e., biodegradable chemicals)
+        concentration, [kg/m3].
+        '''
+        return self.compute_COD(self.ins[0])
+
+    @property
+    def Se(self):
+        '''
+        [float] Effluent substrate (i.e., biodegradable chemicals)
+        concentration, [kg/m3].
+        '''
+        return self.compute_COD(self.outs[1])
+
+    @property
+    def Sw(self):
+        '''
+        [float] Waste flow substrate (i.e., biodegradable chemicals)
+        concentration, [kg/m3].
+        '''
+        return self.compute_COD(self.outs[2])
+
+    @property
+    def Xi(self):
+        '''[float] Influent biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
+        return self.ins[0].imass['WWTsludge']/self.ins[0].F_vol
+
+    @property
+    def Xe(self):
+        '''[float] Effluent  biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
+        return self.outs[1].imass['WWTsludge']/self.outs[1].F_vol
+
+    @property
+    def Xw(self):
+        '''[float] Waste flow biomass (i.e., `WWTsludge`) concentration, [kg/m3].'''
+        return self.outs[2].imass['WWTsludge']/self.outs[2].F_vol
+
+    @property
+    def organic_rm(self):
+        '''[float] Overall organic (COD) removal rate.'''
+        return 1 - self.Qe*self.Se/(self.Qi*self.Si)

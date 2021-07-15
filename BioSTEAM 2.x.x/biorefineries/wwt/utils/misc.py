@@ -18,12 +18,13 @@ from biosteam.utils import (
     default_chemical_dict
     )
 from biorefineries.cornstover import ethanol_density_kggal
+from _chemicals import default_insolubles
 
 __all__ = (
     'auom',
     'ethanol_density_kggal',
     'format_str',
-    'get_MB_split',
+    'get_MB_split_dct',
     'get_MESP',
     'kph_to_tpd',
     )
@@ -36,10 +37,12 @@ def format_str(string):
 
 
 # Split for the membrane bioreactor
-def get_MB_split(chemicals, split_dct=None):
+def get_MB_split_dct(chemicals, **split):
     # Copied from the cornstover biorefinery,
-    # which is based on the 2011 NREL report (Humbird et al.)
-    split = dict(
+    # which is based on the 2011 NREL report (Humbird et al.),
+    # assume no insolubles go to permeate
+    insolubles_dct = dict.fromkeys(default_insolubles, 0.)
+    split_dct = dict(
         Water=0.1454,
         Glycerol=0.125,
         LacticAcid=0.145,
@@ -73,13 +76,14 @@ def get_MB_split(chemicals, split_dct=None):
         Cellobiose=0.125,
         Cellulase=0.145
         )
+    split_dct.update(insolubles_dct)
     remove_undefined_chemicals(split, chemicals)
-    default_chemical_dict(split, chemicals, 0.15, 0.125, 0.145)
+    default_chemical_dict(split, chemicals, 0.15, 0.125, 0)
 
-    if split_dct is not None:
-        split.update(split_dct)
+    if split is not None:
+        split_dct.update(split)
 
-    return split
+    return split_dct
 
 
 def get_MESP(ethanol, tea, tea_name=''):

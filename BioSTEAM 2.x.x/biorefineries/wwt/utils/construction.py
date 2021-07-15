@@ -12,9 +12,37 @@
 '''Select pipe size from volumetric flow rate and velocity.'''
 
 import numpy as np
+from biosteam.utils import ExponentialFunctor
+from biosteam.units.design_tools.tank_design import (
+    mix_tank_purchase_cost_algorithms,
+    TankPurchaseCostAlgorithm
+    )
 
-__all__ = ('select_pipe',)
+__all__ = ('IC_purchase_cost_algorithms', 'select_pipe',)
 
+
+# =============================================================================
+# IC
+# =============================================================================
+# Tank cost algorithms
+IC_purchase_cost_algorithms = mix_tank_purchase_cost_algorithms.copy()
+conventional = IC_purchase_cost_algorithms['Conventional']
+#!!! Need to check if the cost correlation still holds for the ranges beyond
+ic = TankPurchaseCostAlgorithm(
+    ExponentialFunctor(A=conventional.f_Cp.A,
+                       n=conventional.f_Cp.n),
+    V_min=np.pi/4*1.5**2*16, # 1.5 and 16 are the lower bounds of the width and height ranges in ref [1]
+    V_max=np.pi/4*12**2*25, # 12 and 25 are the lower bounds of the width and height ranges in ref [1]
+    V_units='m^3',
+    CE=conventional.CE,
+    material='Stainless steel')
+
+IC_purchase_cost_algorithms['IC'] = ic
+
+
+# =============================================================================
+# AnMBR
+# =============================================================================
 # Based on ANSI (American National Standards Institute) pipe chart
 # the original code has a bug (no data for 22) and has been fixed here
 boundaries = np.concatenate([

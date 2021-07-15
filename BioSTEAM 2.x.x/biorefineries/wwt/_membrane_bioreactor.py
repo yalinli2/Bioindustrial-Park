@@ -26,9 +26,11 @@ https://doi.org/10.1039/C5EE03715H.
 import math
 import biosteam as bst
 import thermosteam as tmo
+from collections.abc import Iterable
 from biosteam.exceptions import DesignError
 #!!! Need to enable relative importing
 from _wwt_pump import WWTpump
+from _chemicals import default_insolubles
 from utils import (
     auom,
     compute_stream_COD,
@@ -41,6 +43,7 @@ __all__ = ('AnMBR',)
 _ft_to_m = auom('ft').conversion_factor('m')
 _ft2_to_m2 = auom('ft2').conversion_factor('m2')
 _ft3_to_m3 = auom('ft3').conversion_factor('m3')
+_ft3_to_gal = auom('ft3').conversion_factor('gallon')
 _m3_to_gal = auom('m3').conversion_factor('gal')
 _cmh_to_mgd = _m3_to_gal * 24 / 1e6 # cubic meter per hour to million gallon per day
 
@@ -62,7 +65,7 @@ def _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, A_AF, V_m_AF):
 class AnMBR(bst.Unit):
     '''
     Anaerobic membrane bioreactor (AnMBR) for wastewater treatment as in
-    Shoener et al. [1]_
+    Shoener et al. [1]_ Some assumptions adopted from Humbird et al. [2]_
 
     In addition to the anaerobic treatment, an optional second stage can be added,
     which can be aerobic filter or granular activated carbon (GAC).
@@ -92,6 +95,14 @@ class AnMBR(bst.Unit):
     include_degassing_membrane : bool
         If to include a degassing membrane to enhance methane
         (generated through the digestion reaction) recovery.
+    biodegradability : float or dict
+        Biodegradability of chemicals,
+        when shown as a float, all biodegradable chemicals are assumped to have
+        the same degradability.
+    Y : float
+        Biomass yield, [kg biomass/kg consumed COD].
+    T : float
+        Temperature of the reactor.
 
     References
     ----------
@@ -99,9 +110,14 @@ class AnMBR(bst.Unit):
     Valorization of Dilute Organic Carbon Waste Streams.
     Energy Environ. Sci. 2016, 9 (3), 1102–1112.
     https://doi.org/10.1039/C5EE03715H.
+    .. [2] Humbird et al., Process Design and Economics for Biochemical Conversion of
+    Lignocellulosic Biomass to Ethanol: Dilute-Acid Pretreatment and Enzymatic
+    Hydrolysis of Corn Stover; Technical Report NREL/TP-5100-47764;
+    National Renewable Energy Lab (NREL), 2011.
+    https://www.nrel.gov/docs/fy11osti/47764.pdf
     '''
-    _N_ins = 5
-    _N_outs = 3
+    _N_ins = 4
+    _N_outs = 4
 
     # Equipment-related parameters
     _N_train = 2
@@ -146,9 +162,10 @@ class AnMBR(bst.Unit):
         'submerged': 25,
         }
     _TMP_aerobic = None
-    _SGD = 1.7
+    _recir_ratio = 4
     _v_cross_flow = 3
-
+    _v_GAC = 8
+    _SGD = 1.7
 
 
 
@@ -176,7 +193,8 @@ class AnMBR(bst.Unit):
                  membrane_material='ceramic',
                  include_aerobic_filter=False,
                  add_GAC=False,
-                 include_degassing_membrane=False,
+                 include_degassing_membrane=True,
+                 biodegradability={}, Y=0.05, T=35+273.15,
                  **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.reactor_type = reactor_type
@@ -186,10 +204,9 @@ class AnMBR(bst.Unit):
         self.membrane_material = membrane_material
         self.add_GAC = add_GAC
         self.include_degassing_membrane = include_degassing_membrane
-
-        self.Pumps = dict.fromkeys(
-            ('Reactor', 'Membrane', 'Degassing'),
-            (None, None, None)) # each of the value should be a `WWTpump` object
+        self.biodegradability = \
+            biodegradability if biodegradability else get_BD_dct(self.chemicals)
+        self.Y = Y
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -240,30 +257,26 @@ class AnMBR(bst.Unit):
 
 
     def _run(self):
-        inf, recycled, naocl, citric, air_in = self.ins
-        perm, retent, recir, biogas, air_out = self.outs
+        inf, naocl, citric, air_in = self.ins
+        biogas, perm, sludge, air_out = self.outs
+        chems = self.chemicals
+        Q_mgd = self.Q_mgd
 
-
-        ### Compute reactor numbers ###
-        self._set_mod_case_tank_N()
-
-        ### Set reactor configuration ###
-
-
-
-
-        ### Clean in place (CIP) ###
+        # Chemicals for cleaning
+        # Assume both chemicals are used up
         # 2200 gal/yr/mgd of 12.5 wt% solution, 15% by volume
-        #!!! The original codes seem to have a bug
-        dose_naocl = (2200*self.Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
+        #!!! The original codes seem to have a bug in calculating NaOCl quantity
+        dose_naocl = (2200*Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
         naocl.imass['NaOCl'] = dose_naocl * 0.125
         naocl.imass['H2O'] = dose_naocl - naocl.imass['NaOCl']
 
         # 600 gal/yr/mgd of 100% solution, 13.8 lb/gal
-        citric.imass['CitricAcid'] = (600*self.Q_mgd) * \
+        citric.imass['CitricAcid'] = (600*Q_mgd) * \
             (13.8*auom('lb').conversion_factor('kg')) / 365 / 24 # kg/hr solution
 
+        # Gas for sparging
         air_out.link(air_in)
+        air_in.T = 17 + 273.15
         if not self.add_GAC and self.membrane_configuration=='submerged':
             gas_ft3_min = self._compute_gas_demand()
             self._design_blower(gas_ft3_min)
@@ -276,9 +289,39 @@ class AnMBR(bst.Unit):
         else:
             air_in.empty()
 
+        # Reactions
+        self.grow_rxns(inf.mol)
+        self.biogas_rxns(inf.mol)
+        biogas.receive_vent(inf)
+
+        # For pump design
+        self._compute_mod_case_tank_N()
+        Q_R_mgd, Q_IR_mgd = self._compute_liq_flows()
+        retent, recir = inf.copy(), inf.copy()
+        retent.F_mass *= Q_R_mgd / Q_mgd
+        recir.F_mass *= Q_IR_mgd / Q_mgd
+
+        # Effluents
+        insoluble_idx = [chems.index[i.ID] for i in chems
+                         if i.ID in default_insolubles] # WWTsludge included
+
+        # Assume all WWTsludge goes to the sludge, solubles have the same
+        # insolubles is 1 wt%, based on stream 621 (IS=1%) in ref [2]
+        sludge.copy_like(inf)
+        sludge.imass[insoluble_idx] = 0.
+        sludge.F_mass = inf.imass['WWTsludge'].sum() * (1-0.01)/0.01
+        sludge.imass[insoluble_idx] = inf.imass[insoluble_idx]
+        perm.mass = inf.mass - sludge.mass
+
+        perm.T = sludge.T = biogas.T = air_out.T = self.T
 
 
-    def _set_mod_case_tank_N(self):
+    @staticmethod
+    def compute_COD(stream):
+        return compute_stream_COD(stream)
+
+
+    def _compute_mod_case_tank_N(self):
         mod_per_cas_range, cas_per_tank_range = \
             self.mod_per_cas_range, self.cas_per_tank_range
 
@@ -298,6 +341,33 @@ class AnMBR(bst.Unit):
                     mod_per_cas = mod_per_cas_range[0]
 
 
+    def _compute_liq_flows(self):
+        m_config = self.membrane_configuration
+
+        if m_config == 'multi-tube':
+            # Cross-flow flow rate per module,
+            # based on manufacture specifications for compact 33, [m3/hr]
+            Q_cross_flow = 53.5 * self.v_cross_flow
+            Q_R_cmh = self.N_mod_tot * Q_cross_flow # total retentate flow rate, [m3/hr]
+            Q_R_mgd = Q_R_cmh * _cmh_to_mgd # [mgd]
+
+        Q_mgd, recir_ratio = self.Q_mgd, self.recir_ratio
+        if Q_mgd*recir_ratio >= Q_R_mgd:
+            Q_IR_mgd = Q_mgd*recir_ratio - Q_R_mgd
+        else:
+            Q_IR_mgd = 0
+            self._recir_ratio = Q_R_mgd / Q_mgd
+
+        if self.add_GAC:
+            Q_upflow_req = (self.v_GAC/_ft_to_m) * \
+                self.L_membrane_tank*self.W_tank*self.N_train * 24 / _ft3_to_gal
+            Q_IR_add_mgd = max(0, (Q_mgd+Q_IR_mgd)-Q_upflow_req)
+            Q_IR_mgd += Q_IR_add_mgd
+            self._recir_ratio = Q_IR_mgd / Q_mgd
+
+        return Q_R_mgd, Q_IR_mgd
+
+
     #!!! No sparging if submerged or using GAC
     # Maybe make blower an another class
     def _compute_gas_demand(self): # for sparging
@@ -308,10 +378,10 @@ class AnMBR(bst.Unit):
 
 
     def _compute_blower_N(self, gas_ft3_min):
-        TCFM = gas_ft3_min
+        TCFM = gas_ft3_min # total cubic ft per min
         N = 1
         if TCFM <= 30000:
-            CFMB = TCFM / N
+            CFMB = TCFM / N # cubic ft per min per blower
             while CFMB > 7500:
                 N += 1
                 CFMB = TCFM / N
@@ -329,18 +399,13 @@ class AnMBR(bst.Unit):
         self._N_blower = N + 1 # add a spare
 
 
-
-
-
     def _design(self):
-        # Reactor and membrane tanks
+        D = self.design_results
         self._design_reactor()
-
-        # Membrane
         self._design_membrane()
+        self._design_pumps()
 
-        # Pumps
-
+        D['Blower'] = self.N_blower
 
     ### Reactor and membrane tanks ###
     def _design_reactor(self):
@@ -397,7 +462,7 @@ class AnMBR(bst.Unit):
         # Total volume of slab concrete [ft3]
         VSC = VSC_dist + VSC_CSTR + VSC_eff + VSC_PBB + VSC_membrane_tank + VSC_well
 
-        D['Tank concrete'] = VWC + VSC
+        D['Tank concrete (ft3)'] = VWC + VSC
 
         ### Excavation calculation ###
         get_VEX = lambda L_bttom, W_bottom, diff: \
@@ -413,7 +478,7 @@ class AnMBR(bst.Unit):
         # Excavation volume for pump/blower building, [ft3]
         VEX_PBB = get_VEX((W_PB+W_BB+2*CA), W_bottom, diff)
 
-        D['Excavation'] = VEX_membrane_tank + VEX_PBB
+        D['Excavation (ft3)'] = VEX_membrane_tank + VEX_PBB
 
 
     def _design_AF(self):
@@ -521,52 +586,80 @@ class AnMBR(bst.Unit):
 
 
     def _design_multi_tube(self,):
-        D = self.design_results
-        # Cross-flow flow rate per module,
-        # based on manufacture specifications for compact 33, [m3/hr]
-        Q_cross_flow = 53.5 * self.v_cross_flow
-
-        N_tot = self.N_train * self.cas_per_tank * self.mod_per_cas # total number of modules
-
-        Q_R_cmh = N_tot * Q_cross_flow # total retentate flow rate, [m3/hr]
-        Q_R_mgd = Q_R_cmh * _cmh_to_mgd # [mgd]
-
-        M_tot = N_tot * 263.05
         # # 263.05 is volume of material for each membrane tube, [m3]
         # #      L_tube               OD        ID
         # V_tube = 3 * math.pi/4 * ((6e-3)**2-(5.2e-3)**2)
         # V_SU = 700 * V_tube # V for each small unit [m3]
         # M_SU = 1.78*10e3 * V_SU # mass = density*volume, [kg/m3]
-
-        D['Membrane'] = M_tot
-        D['Retentate flow'] = Q_R_mgd
+        self.design_results['Membrane (kg)'] = self.N_mod_tot*263.05
 
 
     ### Pumps ###
     def _design_pump(self):
-        pumps = (None, None, None, None)
+        rx_type, m_config = self.reactor_type, self.membrane_configuration
+        pumps = (None, None, None, None, ()) # the last one is for chemical pumping
 
         # Permeate
-        inputs = (self.cas_per_tank, self.D_tank, self.TMP_anaerobic,
-                  self.include_aerobic_filter)
-        pumps[0] = WWTpump(ID=f'{self.ID}_PERM', ins=self.outs[0].proxy(),
-                           pump_type='cross-flow_permeate', inputs=inputs)
+        add_inputs = (self.cas_per_tank, self.D_tank, self.TMP_anaerobic,
+                      self.include_aerobic_filter)
+        pumps[0] = WWTpump(ID=f'{self.ID}_perm',
+                           ins=self.outs[1].proxy(), # permeate
+                           pump_type=f'permeate_{m_config}',
+                           add_inputs=add_inputs)
 
-        PAUSED, ADD OTHER PUMPS
+        # Retentate
+        add_inputs = (self.cas_per_tank,)
+        pumps[1] = WWTpump(ID=f'{self.ID}_retent',
+                           ins=self._retent,
+                           pump_type=f'retentate_{rx_type}',
+                           add_inputs=add_inputs)
 
+        # Recirculation
+        add_inputs = (self.L_CSTR,)
+        pumps[2] = WWTpump(ID=f'{self.ID}_recir',
+                           ins=self._recir,
+                           pump_type=f'recirculation_{rx_type}',
+                           add_inputs=add_inputs)
+
+        # Lift, only relevant to AF reactors
+        if rx_type == 'AF':
+            #!!! Need updating, might need two lift, if ANA and AER are both used
+            add_inputs = (self.cas_per_tank,)
+            pumps[3] = WWTpump(ID=f'{self.ID}_lift',
+                               ins=self.ins[0].proxy(), # ???
+                               pump_type='lift_AF',
+                               add_inputs=add_inputs)
+
+        # Chemical (stroage included)
+        pumps[4][0] = WWTpump(ID=f'{self.ID}_naocl',
+                           ins=self.ins[2].proxy(), # naocl
+                           pump_type='chemical',
+                           add_inputs={})
+
+        pumps[4][1] = WWTpump(ID=f'{self.ID}_citric',
+                           ins=self.ins[3].proxy(), # citric
+                           pump_type='chemical',
+                           add_inputs={})
+
+        # Sum up results
         self._pump_dct = dict.fromkeys(
-            ('permeate', 'retentate', 'recirculation', 'lift'), pumps)
+            ('permeate', 'retentate', 'recirculation', 'lift', 'chemical'), pumps)
 
-        pipe_ss, pump_ss = 0., 0.
+        pipe_ss, pump_ss, hpde = 0., 0., 0.
         for p in pumps:
             if p is not None:
-                p.simulate()
-                pipe_ss += p.design_results['Pipe stainless steel']
-                pump_ss += p.design_results['Pump stainless steel']
+                if not isinstance(p, Iterable):
+                    p.simulate()
+                    pipe_ss += p.design_results['Pipe stainless steel (kg)']
+                    pump_ss += p.design_results['Pump stainless steel (kg)']
+                else:
+                    for cp in p:
+                        hpde += cp.design_results['Chemical storage HPDE (kg)']
 
         D = self.design_results
-        D['Pipe stainless steel'] = pipe_ss
-        D['Pump stainless steel'] = pump_ss
+        D['Pipe stainless steel (kg)'] = pipe_ss
+        D['Pump stainless steel (kg)'] = pump_ss
+        D['Pump chemical storage HPDE (kg)'] = hpde
 
 
 
@@ -660,7 +753,7 @@ class AnMBR(bst.Unit):
         return self._cas_per_tank_spare
     @cas_per_tank_spare.setter
     def cas_per_tank_spare(self, i):
-        self._cas_per_tank_spare = i
+        self._cas_per_tank_spare = math.ceil(i)
 
     @property
     def mod_per_cas_range(self):
@@ -671,7 +764,8 @@ class AnMBR(bst.Unit):
         return self._mod_per_cas_range
     @mod_per_cas_range.setter
     def mod_per_cas_range(self, i):
-        self._mod_per_cas_range[self.membrane_type] = tuple(i)
+        self._mod_per_cas_range[self.membrane_type] = \
+            tuple(math.floor(i[0]), math.floor(i[1]))
 
     @property
     def mod_per_cas(self):
@@ -689,14 +783,19 @@ class AnMBR(bst.Unit):
         return self._cas_per_tank_range
     @cas_per_tank_range.setter
     def cas_per_tank_range(self, i):
-        self._cas_per_tank_range = tuple(i)
+        self._cas_per_tank_range = tuple(math.floor(i[0]), math.floor(i[1]))
 
     @property
     def cas_per_tank(self):
         '''
         [float] Number of membrane cassettes per tank for the current membrane type.
         '''
-        return self._cas_per_tank or self._cas_per_tank_range [0]
+        return self._cas_per_tank or self._cas_per_tank_range[0]
+
+    @property
+    def N_mod_tot(self):
+        '''[int] Total number of memberane modules.'''
+        return self.N_train * self.cas_per_tank * self.mod_per_cas
 
     @property
     def mod_surface_area(self):
@@ -776,8 +875,12 @@ class AnMBR(bst.Unit):
         '''
         [dict] All pumps included in this unit, will be automatically updated
         during simulation.
-        Keys are "permeate", "retentate", "recirculation", and "lift",
+        Keys are "permeate", "retentate", "recirculation", "lift",
+        and "chemical" (chemical storage included),
         values are :class:`WWTpump` objects (or None if not applicable).
+        Note that the value for "chemical" is a tuple of two :class:`WWTpump`,
+        the first one is for NaOCl and the second one is for citric acid
+        (both used for membrane cleaning).
         '''
         return self._pump_dct
 
@@ -903,6 +1006,18 @@ class AnMBR(bst.Unit):
         self._HRT = float(i)
 
     @property
+    def recir_ratio(self):
+        '''
+        [float] Internal recirculation ratio, will be updated in simulation
+        if the originally set ratio is not adequate for the desired flow
+        considering retentate and GAC (if applicable).
+        '''
+        return self._recir_ratio
+    @recir_ratio.setter
+    def recir_ratio(self, i):
+        self._recir_ratio = float(i)
+
+    @property
     def J_max(self):
         '''[float] Maximum membrane flux, [L/m2/hr].'''
         return self._J_max
@@ -956,3 +1071,79 @@ class AnMBR(bst.Unit):
     @v_cross_flow.setter
     def v_cross_flow(self, i):
         self._v_cross_flow = float(i)
+
+    @property
+    def v_GAC(self):
+        '''
+        [float] Upflow velocity for GAC bed expansion, [m/hr].
+        '''
+        return self._v_GAC if self.add_GAC==True else 0
+    @v_GAC.setter
+    def v_GAC(self, i):
+        self._v_GAC = float(i)
+
+    @property
+    def biodegradability(self):
+        '''
+        [float of dict] Biodegradability of chemicals,
+        when shown as a float, all biodegradable chemicals are assumped to have
+        the same degradability.
+        '''
+        return self._biodegradability
+    @biodegradability.setter
+    def biodegradability(self, i):
+        if isinstance(i, float):
+            if not 0<=i<=1:
+                raise ValueError('`biodegradability` should be within [0, 1], '
+                                 f'the input value {i} is outside the range.')
+            self._biodegradability = i
+            return
+
+        for k, v in i.items():
+            if not 0<=v<=1:
+                raise ValueError('`biodegradability` should be within [0, 1], '
+                                 f'the input value for chemical "{k}" is '
+                                 'outside the range.')
+        self._biodegradability = i
+
+    @property
+    def i_rm(self):
+        '''[:class:`np.array`] Removal of each chemical in this reactor.'''
+        return self._i_rm
+
+    @property
+    def Y(self):
+        '''
+        [float] Biomass yield, [kg biomass/kg consumed COD].
+        .. note::
+            This yield is considered as the "synthesis"
+
+        '''
+        return self._Y
+    @Y.setter
+    def Y(self, i):
+        if i < 0:
+            raise ValueError('`Y` should be >= 0, '
+                             f'the input value {i} is outside the range.')
+        self._Y = i
+
+    @property
+    def biogas_rxns(self):
+        '''
+        [:class:`tmo.ParallelReaction`] Biogas production reactions.
+        '''
+        return self._biogas_rxns
+
+    @property
+    def growth_rxns(self):
+        '''
+        [:class:`tmo.ParallelReaction`] Biomass (WWTsludge) growth reactions.
+        '''
+        return self._growth_rxns
+
+    @property
+    def organic_rm(self):
+        '''[float] Overall organic (COD) removal rate.'''
+        Qi, Qe = self.ins[0].F_vol, self.outs[1].F_vol
+        Si, Se = self.compute_COD(self.ins[0]), self.compute_COD(self.outs[1].F_vol)
+        return 1 - Qe*Se/(Qi*Si)

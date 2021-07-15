@@ -46,7 +46,7 @@ from utils import (
     get_digestable_chemicals,
     compute_stream_COD,
     get_digestion_rxns,
-    get_MB_split,
+    get_MB_split_dct,
     )
 from _settings import new_price
 from _internal_circulation_rx import InternalCirculationRx
@@ -169,11 +169,11 @@ class MembraneBioreactor(bst.Splitter):
     _units= {'Volumetric flow': 'm3/hr',
              'COD flow': 'kg-O2/hr'}
 
-    def __init__(self, ID='', ins=None, outs=(), thermo=None, split=None):
+    def __init__(self, ID='', ins=None, outs=(), thermo=None, **split):
         self._load_thermo(thermo)
-        if split is None:
-            split = get_MB_split(self.chemicals, split)
-        bst.Splitter.__init__(self, ID, ins, outs, thermo, split=split, order=None)
+        if not split:
+            split_dct = get_MB_split_dct(self.chemicals)
+        bst.Splitter.__init__(self, ID, ins, outs, thermo, split=split_dct, order=None)
 
     def _run(self):
         mixture = self.ins[0].copy()

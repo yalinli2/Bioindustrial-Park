@@ -33,11 +33,12 @@ class WWTpump(bst.Unit):
     pump_type : str
         The type of the pump that determines the design algorithms to use.
         The following combination is valid:
-            - "cross-flow_permeate"
+            - "permeate_cross-flow"
+            - "retentate_cross-flow"
     Q_mgd : float
-        Volumetric flow rate in million gallon per day.
-        Will return total volumetric flow through the unit if not provided.
-    inputs : dct
+        Volumetric flow rate in million gallon per day, [mgd].
+        Will use total volumetric flow through the unit if not provided.
+    add_inputs : dct
         Additional inputs that will be passed to the corresponding design alogrithm.
         Check the document for the design alogrithm for the specific input requirements.
 
@@ -58,16 +59,17 @@ class WWTpump(bst.Unit):
     _F_BM_default = bst.Pump._F_BM_default
 
     _valid_pump_types = (
-        'cross-flow_permeate',
+        'permeate_cross-flow',
+        'retentate_cross-flow',
         )
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
-                 pump_type, Q_mgd=None, **inputs):
+                 pump_type, Q_mgd=None, **add_inputs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.pump_type = pump_type
         self.Q_mgd = Q_mgd
-        self.inputs = inputs
+        self.add_inputs = add_inputs
 
 
     def _run(self):
@@ -80,8 +82,8 @@ class WWTpump(bst.Unit):
         M_SS_pipe, M_SS_pump = design_func() #!!! need to add in arguments
 
         D = self.design_results
-        D['Pipe stainless steel'] = M_SS_pipe
-        D['Pump stainless steel'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
+        D['Pipe stainless steel (kg)'] = M_SS_pipe
+        D['Pump stainless steel (kg)'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
 
 
     def _cost(self):
@@ -124,33 +126,45 @@ class WWTpump(bst.Unit):
         return M_SS_pipe, M_SS_pump
 
 
-    def design_cross_flow_permeate(self):
+    ### Permeate ###
+    def design_permeate_cross_flow(self, Q_mgd=None, cas_per_tank=None, D_tank=None,
+                                   TMP=None, include_aerobic_filter=False):
         '''
         Design pump for the permeate stream of cross-flow membrane configuration.
 
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
         Parameters
         ----------
-        N_LU : int
-            Number of large membrane units.
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        cas_per_tank : int
+            Number of membrane cassettes per tank.
         D_tank: float
             Depth of the membrane tank, [ft].
         TMP : float
             Transmembrane pressure, [psi].
         include_aerobic_filter : bool
             Whether aerobic filter is included in the reactor design.
-
         '''
-        N_LU, D_tank, TMP, include_aerobic_filter = self.inputs
+        add_inputs = self.add_inputs
+        Q_mgd = Q_mgd or self.Q_mgd
+        cas_per_tank = cas_per_tank or add_inputs[0]
+        D_tank = D_tank or add_inputs[1]
+        TMP = TMP or add_inputs[2]
+        include_aerobic_filter = include_aerobic_filter or add_inputs[3]
 
         H_ts_PERM = D_tank if include_aerobic_filter else 0
 
         M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
-            Q_mgd=self.Q_mgd,
-            N_pump=N_LU,
+            Q_mgd=Q_mgd,
+            N_pump=cas_per_tank,
             L_s=20, # based on a 30-module unit with a total length of 6 m, [ft]
-            L_d_R=10*N_LU, # based on a 30-module unit with a total width of 1.6 m and extra space, [ft]
+            L_d_R=10*cas_per_tank, # based on a 30-module unit with a total width of 1.6 m and extra space, [ft]
             H_ts=H_ts_PERM, #  H_ds_PERM (D_tank) - H_ss_PERM (0 or D_tank)
-            H_p_R=TMP*2.31 # TMP in water head, [ft]
+            H_p_R=TMP*2.31 # TMP in water head, [ft], comment below on 2.31
             )
 
         # # factor = 2.31 calculated by
@@ -162,45 +176,30 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump
 
 
-    def design_CSTR_recirculation(self,
-                                        Q_R_mgd,
-                                        IRR, # internal recirculation ratio
-                                        v_GAC, # additional upflow velocity for GAC, [m/hr]
-                                        L_train, L_membrane_tank, W_membrane_tank,
-                                        N_train, add_GAC=False):
-        # Total IR pumping flow rate, [mgd]
-        Q_IR_initial_mgd = max(0, (self.Q_mgd*IRR)-Q_R_mgd)
+    ### Retentate ###
+    def design_retentate_CSTR(self, Q_mgd=None, cas_per_tank=None):
+        '''
+        Design pump for the retent stream of CSTR reactors.
 
-        if add_GAC: # to achieve adequate upflow velocity for GAC
-            v_GAC /= _ft_to_m # [ft/hr]
-            A_tank = L_membrane_tank * W_membrane_tank # [ft2]
-            Q_upflow_req = v_GAC * A_tank * N_train # [ft3/hr]
-            Q_upflow_req *= 24 * _ft3_to_gal/1e6 # [mgd]
-            Q_additional_IR = max(0, Q_upflow_req-(self.Q_mgd+Q_IR_initial_mgd))
-            Q_IR_mgd = Q_IR_initial_mgd+Q_additional_IR;
-        else:
-            Q_IR_mgd = Q_IR_initial_mgd
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        cas_per_tank : int
+            Number of membrane cassettes per tank.
+        '''
+        Q_mgd = Q_mgd or self.Q_mgd
+        cas_per_tank = cas_per_tank or self.add_inputs[0]
 
         M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
-            Q_mgd=Q_IR_mgd,
-            N_pump=1,
-            L_s=0., # ignore suction side
-            L_d=L_train, # pipe length per train
-            H_ts=5., # H_ds_IR (5) - H_ss_IR (0)
-            H_p=0. # no pressure
-            )
-
-        return M_SS_IR_pipe, M_SS_IR_pump
-
-
-    def design_CSTR_retentate(self, Q_R_mgd,
-                                    N_unit, # number of membrane units
-                                    D_tank):
-        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
-            Q_mgd=Q_R_mgd,
-            N_pump=N_unit,
+            Q_mgd=Q_mgd,
+            N_pump=cas_per_tank,
             L_s=100, # pipe length per module
-            L_d=30, # pipe length per filter (same as discharge side of lifting pump)
+            L_d=30, # pipe length per filter (same as the discharge side of lift pump)
             H_ts=0., # H_ds_IR (D_tank) - H_ss_IR (D_tank)
             H_p=0. # no pressure
             )
@@ -208,7 +207,41 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump
 
 
-    def design_cross_flow_lift(self, N_train):
+    ### Recirculation ###
+    def design_CSTR_recirculation(self, Q_mgd=None, L_CSTR=None):
+        '''
+        Design pump for the recirculation stream of CSTR reactors.
+
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        L_CSTR : float
+            Length of the CSTR tank, [ft].
+        '''
+        Q_mgd = Q_mgd or self.Q_mgd
+        L_CSTR = L_CSTR or self.add_inputs[0]
+
+        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+            Q_mgd=Q_mgd,
+            N_pump=1,
+            L_s=0., # ignore suction side
+            L_d=L_CSTR, # pipe length per train
+            H_ts=5., # H_ds_IR (5) - H_ss_IR (0)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump
+
+
+    ### Lift ###
+    #!!! Seems like not used in cross-flow, recycle this for AF
+    def design_lift_cross_flow(self, N_train):
+        '''NOT READY YET'''
         M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
             Q_mgd=self.Q_mgd,
             N_pump=2, # one for waste sludge and one for return sludge/clarifier
@@ -219,16 +252,33 @@ class WWTpump(bst.Unit):
             )
 
 
-    def design_cheimcal(self, Q_hr):
-        # Hold two weeks of chemicals, assuming cubic in shape
-        # V_naocl = self.ins[2].F_vol * 24 * 7 # [m3]
-        # V_citric = self.ins[3].F_vol * 24 * 7 # [m3]
-        V_CHEM = Q_hr * 24 * 7 # [m3]
-        # Volume of HDPE, [m3], 0.003 is the thickness of the container in [m]
+    ### Chemical ###
+    def design_cheimcal(self, Q_mgd=None):
+        '''
+        Design pump for membrane cleaning chemicals (NaOCl and citric acid),
+        storage containers are included, and are assumed to be cubic in shape
+        and made of HDPE.
+
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        '''
+        if not Q_mgd:
+            V_CHEM = self.ins[0].F_vol * 24 * 7 * 2 # for two weeks of storage, [m3]
+            Q_CHEM_mgd = self.Q_mgd
+        else:
+            V_CHEM = (Q_mgd*1e6/_m3_to_gal) * 7 * 2
+            Q_CHEM_mgd = Q_mgd
+
+        # HDPE volume, [m3], 0.003 [m] is the thickness of the container
         V_HDPE = 0.003 * (V_CHEM**(1/3))**2*6
         # Mass of HDPE, [m3], 950 is the density of the HDPE in [kg/m3]
         M_HDPE = 950 * V_HDPE
-        Q_CHEM_mgd = Q_hr*_m3_to_gal/1e6 # Q_hr in m3/hr
 
         H_ss_CHEM = V_CHEM**(1/3) / _ft_to_m
         # 9'-7" is the water level in membrane trains
@@ -241,9 +291,11 @@ class WWTpump(bst.Unit):
             N_pump=1,
             L_s=0., # no suction pipe
             L_d=30.,
-            H_ts=H_ts_CHEM, # H_ds_IR (5) - H_ss_IR (0)
+            H_ts=H_ts_CHEM,
             H_p=0. # no pressure
             )
+
+        self.design_results['Chemical storage HDPE (kg)'] = M_HDPE
 
         return M_SS_CHEM_pipe, M_SS_CHEM_pump
 
@@ -292,7 +344,7 @@ class WWTpump(bst.Unit):
     def Q_mgd(self):
         '''
         [float] Volumetric flow rate in million gallon per day, [mgd].
-        Will return total volumetric flow through the unit if not provided.
+        Will use total volumetric flow through the unit if not provided.
         '''
         if self._Q_mgd:
             return self._Q_mgd
