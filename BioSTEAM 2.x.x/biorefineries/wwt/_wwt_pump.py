@@ -20,7 +20,7 @@ __all__ = ('WWTpump',)
 
 _hp_to_kW = auom('hp').conversion_factor('kW')
 _lb_to_kg = auom('lb').conversion_factor('kg')
-_m_to_ft = auom('m').conversion_factor('ft')
+_ft_to_m = auom('ft').conversion_factor('m')
 _ft3_to_gal = auom('ft3').conversion_factor('gallon')
 _m3_to_gal = auom('m3').conversion_factor('gallon')
 
@@ -30,13 +30,16 @@ class WWTpump(bst.Unit):
 
     Parameters
     ----------
-    reactor_type : str
-        Can either be "CSTR" for continuous stirred tank reactor
-        or "AF" for anaerobic filter.
-    membrane_configuration : str
-        Can either be "cross-flow" or "submerged".
-    flow_type : str
-        Can be "recirculation", "permeate", "retentate", or "lift".
+    pump_type : str
+        The type of the pump that determines the design algorithms to use.
+        The following combination is valid:
+            - "cross-flow_permeate"
+    Q_mgd : float
+        Volumetric flow rate in million gallon per day.
+        Will return total volumetric flow through the unit if not provided.
+    inputs : dct
+        Additional inputs that will be passed to the corresponding design alogrithm.
+        Check the document for the design alogrithm for the specific input requirements.
 
     References
     ----------
@@ -54,20 +57,17 @@ class WWTpump(bst.Unit):
     _default_equipment_lifetime = {'Pump': 15}
     _F_BM_default = bst.Pump._F_BM_default
 
-    def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
-                 reactor_type='CSTR',
-                 membrane_configuration='cross-flow',
-                 flow_type='recirculation',
-                 Q_mgd=None,
-                 **kwargs):
-        bst.Unit.__init__(self, ID, ins, outs, thermo)
-        self.reactor_type = reactor_type
-        self.membrane_configuration = membrane_configuration
-        self.flow_type = flow_type
-        self.Q_mgd = Q_mgd
+    _valid_pump_types = (
+        'cross-flow_permeate',
+        )
 
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+
+    def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
+                 pump_type, Q_mgd=None, **inputs):
+        bst.Unit.__init__(self, ID, ins, outs, thermo)
+        self.pump_type = pump_type
+        self.Q_mgd = Q_mgd
+        self.inputs = inputs
 
 
     def _run(self):
@@ -75,19 +75,20 @@ class WWTpump(bst.Unit):
 
 
     def _design(self):
-        rx_type = format_str(self.reactor_type)
-        design_func = getattr(self, f'_design_{rx_type}_{self.flow_type}_pump')
+        pump_type = format_str(self.pump_type)
+        design_func = getattr(self, f'design_{pump_type}')
         M_SS_pipe, M_SS_pump = design_func() #!!! need to add in arguments
 
         D = self.design_results
-        D['Total pipe stainless steel'] = M_SS_pipe
-        D['Total pump stainless steel'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
+        D['Pipe stainless steel'] = M_SS_pipe
+        D['Pump stainless steel'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
 
 
     def _cost(self):
         self.power_utility.rate = self.BHP/self.motor_efficiency * _hp_to_kW
 
 
+    # Generic algorithms that will be called by all design functions
     def _design_generic(self, Q_mgd, N_pump, L_s, L_d, H_ts, H_p):
         self.Q_mgd = Q_mgd
         v, C, Q_cfs = self.v, self.C, self.Q_cfs # [ft/s], -, [ft3/s]
@@ -123,65 +124,32 @@ class WWTpump(bst.Unit):
         return M_SS_pipe, M_SS_pump
 
 
-    def _design_CSTR_recirculation_pump(self,
-                                        Q_R_mgd,
-                                        IRR, # internal recirculation ratio
-                                        v_GAC, # additional upflow velocity for GAC, [m/hr]
-                                        L_train, L_membrane_tank, W_membrane_tank,
-                                        N_train, add_GAC=False):
-        # Total IR pumping flow rate, [mgd]
-        Q_IR_initial_mgd = max(0, (self.Q_mgd*IRR)-Q_R_mgd)
+    def design_cross_flow_permeate(self):
+        '''
+        Design pump for the permeate stream of cross-flow membrane configuration.
 
-        if add_GAC: # to achieve adequate upflow velocity for GAC
-            v_GAC *= _m_to_ft # [ft/hr]
-            A_tank = L_membrane_tank * W_membrane_tank # [ft2]
-            Q_upflow_req = v_GAC * A_tank * N_train # [ft3/hr]
-            Q_upflow_req *= 24 * _ft3_to_gal/1e6 # [mgd]
-            Q_additional_IR = max(0, Q_upflow_req-(self.Q_mgd+Q_IR_initial_mgd))
-            Q_IR_mgd = Q_IR_initial_mgd+Q_additional_IR;
-        else:
-            Q_IR_mgd = Q_IR_initial_mgd
+        Parameters
+        ----------
+        N_LU : int
+            Number of large membrane units.
+        D_tank: float
+            Depth of the membrane tank, [ft].
+        TMP : float
+            Transmembrane pressure, [psi].
+        include_aerobic_filter : bool
+            Whether aerobic filter is included in the reactor design.
 
-        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
-            Q_mgd=Q_IR_mgd,
-            N_pump=1,
-            L_s=0., # ignore suction side
-            L_d=L_train, # pipe length per train
-            H_ts=5., # H_ds_IR (5) - H_ss_IR (0)
-            H_p=0. # no pressure
-            )
+        '''
+        N_LU, D_tank, TMP, include_aerobic_filter = self.inputs
 
-        return M_SS_IR_pipe, M_SS_IR_pump
+        H_ts_PERM = D_tank if include_aerobic_filter else 0
 
-
-    def _design_CSTR_retentate_pump(self, Q_R_mgd,
-                                    N_unit, # number of membrane units
-                                    D_train):
-        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
-            Q_mgd=Q_R_mgd,
-            N_pump=N_unit,
-            L_s=100, # pipe length per module
-            L_d=30, # pipe length per filter (same as discharge side of lifting pump)
-            H_ts=0., # H_ds_IR (D_train) - H_ss_IR (D_train)
-            H_p=0. # no pressure
-            )
-
-        return M_SS_IR_pipe, M_SS_IR_pump
-
-
-    def _design_cross_flow_permeate_pump(self,
-                                         N_LU, # number of large membrane units
-                                         TMP, # transmembrane pressure, [psi]
-                                         D_train,
-                                         include_aerobic_filteration=False):
-        H_ts_PERM = D_train if include_aerobic_filteration else 0
-
-        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
             Q_mgd=self.Q_mgd,
             N_pump=N_LU,
             L_s=20, # based on a 30-module unit with a total length of 6 m, [ft]
             L_d_R=10*N_LU, # based on a 30-module unit with a total width of 1.6 m and extra space, [ft]
-            H_ts=H_ts_PERM, #  H_ds_PERM (D_train) - H_ss_PERM (0 or D_train)
+            H_ts=H_ts_PERM, #  H_ds_PERM (D_tank) - H_ss_PERM (0 or D_tank)
             H_p_R=TMP*2.31 # TMP in water head, [ft]
             )
 
@@ -193,8 +161,55 @@ class WWTpump(bst.Unit):
 
         return M_SS_IR_pipe, M_SS_IR_pump
 
-    def _design_cross_flow_lift_pump(self, N_train):
-        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+
+    def design_CSTR_recirculation(self,
+                                        Q_R_mgd,
+                                        IRR, # internal recirculation ratio
+                                        v_GAC, # additional upflow velocity for GAC, [m/hr]
+                                        L_train, L_membrane_tank, W_membrane_tank,
+                                        N_train, add_GAC=False):
+        # Total IR pumping flow rate, [mgd]
+        Q_IR_initial_mgd = max(0, (self.Q_mgd*IRR)-Q_R_mgd)
+
+        if add_GAC: # to achieve adequate upflow velocity for GAC
+            v_GAC /= _ft_to_m # [ft/hr]
+            A_tank = L_membrane_tank * W_membrane_tank # [ft2]
+            Q_upflow_req = v_GAC * A_tank * N_train # [ft3/hr]
+            Q_upflow_req *= 24 * _ft3_to_gal/1e6 # [mgd]
+            Q_additional_IR = max(0, Q_upflow_req-(self.Q_mgd+Q_IR_initial_mgd))
+            Q_IR_mgd = Q_IR_initial_mgd+Q_additional_IR;
+        else:
+            Q_IR_mgd = Q_IR_initial_mgd
+
+        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+            Q_mgd=Q_IR_mgd,
+            N_pump=1,
+            L_s=0., # ignore suction side
+            L_d=L_train, # pipe length per train
+            H_ts=5., # H_ds_IR (5) - H_ss_IR (0)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump
+
+
+    def design_CSTR_retentate(self, Q_R_mgd,
+                                    N_unit, # number of membrane units
+                                    D_tank):
+        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+            Q_mgd=Q_R_mgd,
+            N_pump=N_unit,
+            L_s=100, # pipe length per module
+            L_d=30, # pipe length per filter (same as discharge side of lifting pump)
+            H_ts=0., # H_ds_IR (D_tank) - H_ss_IR (D_tank)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump
+
+
+    def design_cross_flow_lift(self, N_train):
+        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
             Q_mgd=self.Q_mgd,
             N_pump=2, # one for waste sludge and one for return sludge/clarifier
             L_s=150, # length of suction pipe per filter, [ft]
@@ -204,46 +219,54 @@ class WWTpump(bst.Unit):
             )
 
 
+    def design_cheimcal(self, Q_hr):
+        # Hold two weeks of chemicals, assuming cubic in shape
+        # V_naocl = self.ins[2].F_vol * 24 * 7 # [m3]
+        # V_citric = self.ins[3].F_vol * 24 * 7 # [m3]
+        V_CHEM = Q_hr * 24 * 7 # [m3]
+        # Volume of HDPE, [m3], 0.003 is the thickness of the container in [m]
+        V_HDPE = 0.003 * (V_CHEM**(1/3))**2*6
+        # Mass of HDPE, [m3], 950 is the density of the HDPE in [kg/m3]
+        M_HDPE = 950 * V_HDPE
+        Q_CHEM_mgd = Q_hr*_m3_to_gal/1e6 # Q_hr in m3/hr
+
+        H_ss_CHEM = V_CHEM**(1/3) / _ft_to_m
+        # 9'-7" is the water level in membrane trains
+        # 18" is the distance from C/L of the pump to the ground
+        H_ds_CHEM = 9 + 7/12 - 18/12
+        H_ts_CHEM = H_ds_CHEM - H_ss_CHEM
+
+        M_SS_CHEM_pipe, M_SS_CHEM_pump = WWTpump.design_generic(
+            Q_mgd=Q_CHEM_mgd,
+            N_pump=1,
+            L_s=0., # no suction pipe
+            L_d=30.,
+            H_ts=H_ts_CHEM, # H_ds_IR (5) - H_ss_IR (0)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_CHEM_pipe, M_SS_CHEM_pump
+
 
 
     @property
-    def reactor_type(self):
+    def pump_type(self):
         '''
-        [str] Can either be "CSTR" for continuous stirred tank reactor
-        or "AF" for anaerobic filter.
+        [str] The type of the pump that determines the design algorithms to use.
+        Use `valid_pump_type` to see acceptable pump types.
         '''
-        return self._reactor_type
-    @reactor_type.setter
-    def reactor_type(self, i):
-        if not i.upper() in ('CSTR', 'AF'):
-            raise ValueError('`reactor_type` can only be "CSTR", or "AF", '
-                             f'not "{i}".')
-        self._reactor_type = i.upper()
+        return self._pump_type
+    @pump_type.setter
+    def pump_type(self, i):
+        if i.lower() not in self.valid_pump_types:
+            raise ValueError(f'The given `pump_type` "{i}" is not valid, '
+                             'check `valid_pump_types` for acceptable pump types.')
+        self._pump_type = i.lower()
 
     @property
-    def membrane_configuration(self):
-        '''[str] Can either be "cross-flow" or "submerged".'''
-        return self._membrane_configuration
-    @membrane_configuration.setter
-    def membrane_configuration(self, i):
-        i = 'cross-flow' if i.lower() in ('cross flow', 'crossflow') else i
-        if not i.lower() in ('cross-flow', 'submerged'):
-            raise ValueError('`membrane_configuration` can only be "cross-flow", '
-                             f'or "submerged", not "{i}".')
-        self._membrane_configuration = i.lower()
-
-    @property
-    def flow_type(self):
-        '''
-        [str] Can either be "recirculation", "permeate", or "retentate".
-        '''
-        return self._flow_type
-    @flow_type.setter
-    def flow_type(self, i):
-        if not i.lower() in ('recirculation', 'permeate', 'retentate', 'lift'):
-            raise ValueError('`flow_type` can only be "recirculation", '
-                             f'"permeate", "retentate", or "lift", not "{i}".')
-        self._flow_type = i.lower()
+    def valid_pump_types(self):
+        '''[tuple] Acceptable pump types.'''
+        return self._valid_pump_types
 
     @property
     def H_sf(self):

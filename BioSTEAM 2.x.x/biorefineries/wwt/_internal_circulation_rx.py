@@ -34,12 +34,6 @@ from utils import (
 
 __all__ = ('InternalCirculationRx',)
 
-def _check_if_relevant(attr, method, relevant_method):
-    if not relevant_method in method:
-        raise AttributeError(f'`{attr[1:]}` is not relevant when `method` is '
-                             f'"{method}".')
-    return attr
-
 
 # %%
 
@@ -458,10 +452,9 @@ class InternalCirculationRx(bst.MixTank):
         [float] Ratio between the biomass concentration in the reactor and the waste flow,
         only relevant when the "lumped" method is used.
         '''
-        return _check_if_relevant(self._q_Xw, self.method, 'lumped')
+        return self._q_Xw if self.method=='lumped' else None
     @q_Xw.setter
     def q_Xw(self, i):
-        _check_if_relevant(self._q_Xw, self.method, 'lumped')
         if not i>=1:
             raise ValueError('`q_Xw` should be >=1, '
                              f'the input value {i} is outside the range.')
@@ -473,10 +466,9 @@ class InternalCirculationRx(bst.MixTank):
         [float] Maximum specific growth rate, [/hr],
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._mu_max, self.method, 'separate')
+        return self._mu_max if self.method=='separate' else None
     @mu_max.setter
     def mu_max(self, i):
-        _check_if_relevant(self._mu_max, self.method, 'separate')
         if i < 0:
             raise ValueError('`mu_max` should be >= 0, '
                              f'the input value {i} is outside the range.')
@@ -488,10 +480,9 @@ class InternalCirculationRx(bst.MixTank):
         [float] Specific endogenous decay coefficient, [/hr],
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._b, self.method, 'separate')
+        return self._b if self.method=='separate' else None
     @b.setter
     def b(self, i):
-        _check_if_relevant(self._b, self.method, 'separate')
         if i < 0:
             raise ValueError('`b` should be >= 0, '
                              f'the input value {i} is outside the range.')
@@ -504,10 +495,9 @@ class InternalCirculationRx(bst.MixTank):
         should be within [0, 1] (ideal to no retention),
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._Fxb, self.method, 'separate')
+        return self._Fxb if self.method=='separate' else None
     @Fxb.setter
     def Fxb(self, i):
-        _check_if_relevant(self._Fxb, self.method, 'separate')
         if not 0<=i<=1:
             raise ValueError('`Fxb` should be within [0, 1], '
                              f'the input value {i} is outside the range.')
@@ -520,10 +510,9 @@ class InternalCirculationRx(bst.MixTank):
         should be within [0, 1] (ideal to no retention),
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._Fxt, self.method, 'separate')
+        return self._Fxt if self.method=='separate' else None
     @Fxt.setter
     def Fxt(self, i):
-        _check_if_relevant(self._Fxt, self.method, 'separate')
         if not 0<=i<=1:
             raise ValueError('`Fxt` should be within [0, 1], '
                              f'the input value {i} is outside the range.')
@@ -535,7 +524,7 @@ class InternalCirculationRx(bst.MixTank):
         [float] Volume of the bottom reactor, [m3],
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._Vb, self.method, 'separate')
+        return self._Vb if self.method=='separate' else None
 
     @property
     def Vt(self):
@@ -543,7 +532,7 @@ class InternalCirculationRx(bst.MixTank):
         [float] Volume of the top reactor, [m3],
         only relevant when the "separate" method is used.
         '''
-        return _check_if_relevant(self._Vt, self.method, 'separate')
+        return self._Vt if self.method=='separate' else None
 
     @property
     def Vliq(self):
