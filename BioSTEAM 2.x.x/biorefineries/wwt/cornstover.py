@@ -104,20 +104,21 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
         outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
         mockup=True,
         IC_method='lumped',
-        dry_flow_tpd=kph_to_tpd(s.cornstover),
-        need_ammonia=False
+        # dry_flow_tpd=kph_to_tpd(s.cornstover),
+        # need_ammonia=False
     )
 
     M501 = bst.Mixer('M501', (u.S604-1, S401-0))
 
     cs.create_facilities(
         solids_to_boiler=M501-0,
-        gas_to_boiler=u.R601-0,
-        process_water_streams=(s.caustic_R602, s.stripping_water,
-                                s.warm_process_water_1,
-                                s.warm_process_water_2,
-                                s.pretreatment_steam,
-                                s.saccharification_water),
+        gas_to_boiler=s.biogas,
+        process_water_streams=(#s.caustic_R602,
+                               s.stripping_water,
+                               s.warm_process_water_1,
+                               s.warm_process_water_2,
+                               s.pretreatment_steam,
+                               s.saccharification_water),
         feedstock=feedstock,
         RO_water=u.S605-0,
         recycle_process_water=stripper_bottoms_product,

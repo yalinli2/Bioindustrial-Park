@@ -11,7 +11,7 @@
 
 import math
 import biosteam as bst
-from biosteam.design_tools.mechanical import brake_efficiency, motor_efficiency
+from biosteam.units.design_tools.mechanical import brake_efficiency, motor_efficiency
 
 #!!! Need to enable relative importing
 from utils import auom, select_pipe, format_str
@@ -36,6 +36,7 @@ class WWTpump(bst.Unit):
             - "permeate_cross-flow"
             - "retentate_cross-flow"
             - "recirculation_CSTR"
+            - "lift"
             - "chemical"
     Q_mgd : float
         Volumetric flow rate in million gallon per day, [mgd].
@@ -58,12 +59,13 @@ class WWTpump(bst.Unit):
     C = 110 # Hazen- Williams coefficient for stainless steel (SS)
 
     _default_equipment_lifetime = {'Pump': 15}
-    _F_BM_default = bst.Pump._F_BM_default
+    # _F_BM_default = bst.Pump._F_BM_default
 
     _valid_pump_types = (
         'permeate_cross-flow',
         'retentate_cross-flow',
         'recirculation_CSTR',
+        'lift',
         'chemical'
         )
 
@@ -83,11 +85,12 @@ class WWTpump(bst.Unit):
     def _design(self):
         pump_type = format_str(self.pump_type)
         design_func = getattr(self, f'design_{pump_type}')
-        M_SS_pipe, M_SS_pump = design_func() #!!! need to add in arguments
 
         D = self.design_results
-        D['Pipe stainless steel [kg]'] = M_SS_pipe
-        D['Pump stainless steel [kg]'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
+        D['Pipe stainless steel [kg]'], \
+        #!!! need to consider pump's lifetime in LCA
+        D['Pump stainless steel [kg]'], \
+        D['Chemical storage HDPE [m3]'] = design_func()
 
 
     def _cost(self):
@@ -128,7 +131,7 @@ class WWTpump(bst.Unit):
         # assume 50% of the product weight is SS
         M_SS_pump = N_pump * (725*0.5)
 
-        return M_SS_pipe, M_SS_pump
+        return M_SS_pipe, M_SS_pump, 0
 
 
     ### Permeate ###
@@ -178,7 +181,7 @@ class WWTpump(bst.Unit):
         # factor /= 1e3 # divided by water's density in kg/m3, now in [m]
         # factor *= auom('m').conversion_factor('ft') # m to ft
 
-        return M_SS_IR_pipe, M_SS_IR_pump
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
     ### Retentate ###
@@ -209,7 +212,7 @@ class WWTpump(bst.Unit):
             H_p=0. # no pressure
             )
 
-        return M_SS_IR_pipe, M_SS_IR_pump
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
     ### Recirculation ###
@@ -240,20 +243,34 @@ class WWTpump(bst.Unit):
             H_p=0. # no pressure
             )
 
-        return M_SS_IR_pipe, M_SS_IR_pump
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
     ### Lift ###
-    #!!! Seems like not used in cross-flow, recycle this for AF
-    def design_lift_cross_flow(self, N_train):
-        '''NOT READY YET'''
+    def design_lift(self, Q_mgd=None, N_filter=None, D=None):
+        '''
+        Design pump for the filter tank to lift streams.
+
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        N_filter : float
+            Number of filter tanks.
+        D : float
+            Depth of the filter tank, [ft].
+        '''
         M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
             Q_mgd=self.Q_mgd,
-            N_pump=2, # one for waste sludge and one for return sludge/clarifier
+            N_pump=N_filter,
             L_s=150, # length of suction pipe per filter, [ft]
             L_d_R=30, # pipe length per filter
-            H_ts=12, # H_ds_LIFT (12) - H_ss_LIFT (0)
-            H_p_R=0. # TMP in water head, [ft]
+            H_ts=D, # H_ds_LIFT (D) - H_ss_LIFT (0)
+            H_p_R=0. # no pressure
             )
 
 
@@ -282,8 +299,8 @@ class WWTpump(bst.Unit):
 
         # HDPE volume, [m3], 0.003 [m] is the thickness of the container
         V_HDPE = 0.003 * (V_CHEM**(1/3))**2*6
-        # Mass of HDPE, [m3], 950 is the density of the HDPE in [kg/m3]
-        M_HDPE = 950 * V_HDPE
+        # # Mass of HDPE, [m3], 950 is the density of the HDPE in [kg/m3]
+        # M_HDPE = 950 * V_HDPE
 
         H_ss_CHEM = V_CHEM**(1/3) / _ft_to_m
         # 9'-7" is the water level in membrane trains
@@ -300,9 +317,7 @@ class WWTpump(bst.Unit):
             H_p=0. # no pressure
             )
 
-        self.design_results['Chemical storage HDPE [kg]'] = M_HDPE
-
-        return M_SS_CHEM_pipe, M_SS_CHEM_pump
+        return M_SS_CHEM_pipe, M_SS_CHEM_pump, V_HDPE
 
 
 

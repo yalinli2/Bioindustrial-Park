@@ -12,8 +12,10 @@
 
 '''
 TODO:
-    - Generic MBR algorithms for AnMBR and AeMBR
+    - Compute heat loss and add heat exchanger
+    - Add ANA/AER filters, consider making a new class then call that class here
     - Add algorithms for other configurations
+    - Maybe add AeMBR as well (make an MBR superclass)
 
 References
 ----------
@@ -29,8 +31,11 @@ import thermosteam as tmo
 from collections.abc import Iterable
 from biosteam.exceptions import DesignError
 #!!! Need to enable relative importing
-from _wwt_pump import WWTpump
 from _chemicals import default_insolubles
+from _internal_circulation_rx import InternalCirculationRx
+from _wwt_pump import WWTpump
+from _filter_tank import FilterTank
+from _settings import new_price
 from utils import (
     auom,
     compute_stream_COD,
@@ -48,17 +53,6 @@ _m3_to_gal = auom('m3').conversion_factor('gal')
 _cmh_to_mgd = _m3_to_gal * 24 / 1e6 # cubic meter per hour to million gallon per day
 _lb_to_kg = auom('lb').conversion_factor('kg')
 
-_d_to_A = lambda d: math.pi/4*(d**2)
-_A_to_d = lambda A: ((4*A)/math.pi)**0.5
-
-def _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, A_AF, V_m_AF):
-    # X-sectional area of each filter, [m2]
-    A_AF = (Q_cmd/24) * (1+R_AF) / N_AF / HL_AF
-    # Diameter of each filter, [m]
-    d_AF = (4*A_AF/math.pi) ** 0.5
-    # Depth of each filter, [m]
-    D_AF = V_m_AF / A_AF
-    return d_AF, D_AF
 
 
 # %%
@@ -104,6 +98,8 @@ class AnMBR(bst.Unit):
         Biomass yield, [kg biomass/kg consumed COD].
     T : float
         Temperature of the reactor.
+    kwargs : dict
+        Other keyword arguments (e.g., J_max, SGD).
 
     References
     ----------
@@ -117,11 +113,11 @@ class AnMBR(bst.Unit):
     National Renewable Energy Lab (NREL), 2011.
     https://www.nrel.gov/docs/fy11osti/47764.pdf
     '''
-    _N_ins = 5
-    _N_outs = 4
+    _N_ins = 6 # influent, recycle (optional), naocl, citric acid, bisulfite, air (optional)
+    _N_outs = 4 # biogas, effluent, waste sludge, air (optional)
 
     # Equipment-related parameters
-    _N_train = 2
+    _N_train_min = 2
     _cas_per_tank_spare = 2
 
     _mod_surface_area = {
@@ -150,7 +146,7 @@ class AnMBR(bst.Unit):
 
     _L_well = 8
     _W_well = 8
-    _D_well = 8
+    _D_well = 12
 
     _excav_slope = 1.5 # horizontal over vertical
     _excav_access = 3 # construction access, [ft]
@@ -169,6 +165,7 @@ class AnMBR(bst.Unit):
     _SGD = 1.7
     _AFF = 3.33
 
+    _refresh_rxns = InternalCirculationRx._refresh_rxns
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  reactor_type='CSTR',
@@ -191,6 +188,8 @@ class AnMBR(bst.Unit):
         self.biodegradability = \
             biodegradability if biodegradability else get_BD_dct(self.chemicals)
         self.Y = Y
+        self.T = T
+        self._refresh_rxns()
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -200,15 +199,15 @@ class AnMBR(bst.Unit):
 
     def _check_design(self):
         reactor_type = self.reactor_type
-        config = self.membrane_configuration
+        m_config = self.membrane_configuration
         m_type = self.membrane_type
         m_material = self.membrane_material
 
         if reactor_type == 'CSTR':
-            if self.aerobic_filter:
+            if self.include_aerobic_filter:
                 raise DesignError('Aerobic filteration cannot be used in CSTR.')
 
-        if config == 'submerged':
+        if m_config == 'submerged':
             if not m_type in ('hollow fiber', 'flat sheet'):
                 raise DesignError('Only "hollow fiber" or "flat sheet" is allowed '
                                   'for "submerged" membrane, not {m_type}.')
@@ -239,31 +238,44 @@ class AnMBR(bst.Unit):
                                   f'not "{m_material}".')
 
 
+    # =========================================================================
+    # _run
+    # =========================================================================
     def _run(self):
-        inf, naocl, citric, bisulfite, air_in = self.ins
+        raw, recycled, naocl, citric, bisulfite, air_in = self.ins
         biogas, perm, sludge, air_out = self.outs
-        chems = self.chemicals
-        Q_mgd = self.Q_mgd
+
+        inf = raw.copy()
+        inf.mix_from((raw, recycled))
+        self._inf = inf.copy() # this stream will be preserved (i.e., no reaction)
+
+        chems, Q_mgd = self.chemicals, self.Q_mgd
 
         # Chemicals for cleaning
         # Assume both chemicals are used up
-        # 2200 gal/yr/mgd of 12.5 wt% solution, 15% by volume
-        # Note that the original codes seem to have a bug in computing NaOCl quantity
-        naocl_solution = (2200*Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
-        naocl.imass['NaOCl'] = 0.125 * naocl_solution
-        naocl.imass['H2O'] = naocl_solution - naocl.imass['NaOCl']
+        # 2.2 L/yr/cmd of 12.5 wt% solution (15% vol)
+        naocl_solution = (2.2/1e3/365/24) * (inf.F_vol*24) # m3/hr solution
+        naocl.empty()
+        naocl.imass['NaOCl', 'Water'] = [0.125, 1-0.125]
+        naocl.F_vol = naocl_solution
+        # Convert the price from $/L in the `new_price` dict to $/kg
+        naocl.price = (naocl.F_mass/naocl.F_vol) * new_price['NaOCl']
 
-        # 600 gal/yr/mgd of 100% solution, 13.8 lb/gal
-        citric.imass['CitricAcid'] = (600*Q_mgd) * \
-            (13.8*_lb_to_kg) / 365 / 24 # kg/hr solution
+        # 0.6 L/yr/cmd of 100 wt% solution, 13.8 lb/kg
+        citric_solution = (0.6/1e3/365/24) * (inf.F_vol*24) # m3/hr pure
+        citric.empty()
+        citric.ivol['CitricAcid'] = citric_solution
+        citric.price = (citric.F_mass/citric.F_vol) * new_price['CitricAcid']
 
-        # 350 gal/yr/mgd of 38% solution, 3.5 lb/gal
-        bisulfite_solution = (350*Q_mgd) * (3.5*_lb_to_kg) / 365 / 24 # kg/hr solution
-        bisulfite.imass['Bisulfite'] = 0.38 *bisulfite_solution
-        bisulfite.imass['H2O'] = bisulfite_solution - bisulfite.imass['Bisulfite']
+        # 0.35 L/yr/cmd of 38% solution, 3.5 lb/gal
+        bisulfite_solution = (0.35/1e3/365/24) * (inf.F_vol*24) # m3/hr solution
+        bisulfite.empty()
+        bisulfite.imass['Bisulfite', 'Water'] = [0.38, 1-0.38]
+        bisulfite.F_vol = bisulfite_solution
+        bisulfite.price = (bisulfite.F_mass/bisulfite.F_vol) * new_price['Bisulfite']
 
         # Gas for sparging, no sparging needed if submerged or using GAC
-        air_out.link(air_in)
+        air_out.link_with(air_in)
         air_in.T = 17 + 273.15
         if (not self.add_GAC) or (self.membrane_configuration=='submerged'):
             self._design_blower()
@@ -271,8 +283,9 @@ class AnMBR(bst.Unit):
             air_in.empty()
 
         # Reactions
-        self.grow_rxns(inf.mol)
+        self.growth_rxns(inf.mol)
         self.biogas_rxns(inf.mol)
+        biogas.phase = 'g'
         biogas.receive_vent(inf)
 
         # For pump design
@@ -283,14 +296,16 @@ class AnMBR(bst.Unit):
         recir.F_mass *= Q_IR_mgd / Q_mgd
 
         # Effluents
-        insoluble_idx = [chems.index[i.ID] for i in chems
-                         if i.ID in default_insolubles] # WWTsludge included
+        # WWTsludge included in default_insolubles
+        insoluble_idx = tuple([i.ID for i in chems
+                               if i.ID in default_insolubles])
 
-        # Assume all WWTsludge goes to the sludge, solubles have the same
-        # insolubles is 1 wt%, based on stream 621 (IS=1%) in ref [2]
+        # Assume all WWTsludge goes to the sludge,
+        # insolubles is 1 wt%, based on stream 621 (IS=1%) in ref [2],
+        # and solubles have the same split as water
         sludge.copy_like(inf)
         sludge.imass[insoluble_idx] = 0.
-        sludge.F_mass = inf.imass['WWTsludge'].sum() * (1-0.01)/0.01
+        sludge.F_mass = inf.imass[insoluble_idx].sum() * (1-0.01)/0.01
         sludge.imass[insoluble_idx] = inf.imass[insoluble_idx]
         perm.mass = inf.mass - sludge.mass
 
@@ -299,30 +314,31 @@ class AnMBR(bst.Unit):
 
     # Called by _run
     def _compute_mod_case_tank_N(self):
-        mod_per_cas_range, cas_per_tank_range = \
-            self.mod_per_cas_range, self.cas_per_tank_range
+        N_mod_min, N_mod_max = self.mod_per_cas_range[self.membrane_type]
+        N_cas_min, N_cas_max = self.cas_per_tank_range
 
-        mod_per_cas = self.mod_per_cas = mod_per_cas_range[0]
-        cas_per_tank = self.cas_per_tank = cas_per_tank_range[0]
+        mod_per_cas, cas_per_tank = N_mod_min, N_cas_min
 
-        J, J_max, N_train = self.J, self.J_max, self.N_train
+        J, J_max, N_train = self.J, self.J_max, self._N_train_min
         while J > J_max:
             mod_per_cas += 1
-            if mod_per_cas == mod_per_cas_range[1] + 1:
-                if cas_per_tank == cas_per_tank_range[1] + 1:
+            if mod_per_cas == N_mod_max + 1:
+                if cas_per_tank == N_cas_max + 1:
                     N_train += 1
-                    mod_per_cas, cas_per_tank = \
-                        mod_per_cas_range[0], cas_per_tank_range[0]
+                    mod_per_cas, cas_per_tank = N_mod_min, N_cas_min
                 else:
                     cas_per_tank += 1
-                    mod_per_cas = mod_per_cas_range[0]
+                    mod_per_cas = N_mod_min
+
+        self._N_train, self._mod_per_cas, self._cas_per_tank = \
+            mod_per_cas, cas_per_tank
 
 
     # Called by _run
     def _compute_liq_flows(self):
-        m_config = self.membrane_configuration
+        m_type = self.membrane_type
 
-        if m_config == 'multi-tube':
+        if m_type == 'multi-tube':
             # Cross-flow flow rate per module,
             # based on manufacture specifications for compact 33, [m3/hr]
             Q_cross_flow = 53.5 * self.v_cross_flow
@@ -379,33 +395,49 @@ class AnMBR(bst.Unit):
         D = self.design_results
         D['Total air flow [CFM]'] = TCFM
         D['Blower capacity [CFM]'] = CFMB
-        D['Number of blowers'] = self._N_blower = N + 1 # add a spare
+        D['Blowers'] = self._N_blower = N + 1 # add a spare
 
 
-
-
+    # =========================================================================
+    # _design
+    # =========================================================================
     def _design(self):
-        #  Step A: Reactor and membrane tanks
+        D = self.design_results
+        D['Treatment train'] = self.N_train
+        D['Cassette per train'] = self.cas_per_tank
+        D['Module per cassette'] = self.mod_per_cas
+        D['Total membrane modules'] = self.N_mod_tot
+
+        # Step A: Reactor and membrane tanks
         # Call the corresponding design function
         # (_design_CSTR or _design_AF)
         func = getattr(self, f'_design_{self.reactor_type}')
-        func()
-        #!!! PAUSED
-        # CONTINUE ON THE FUNCTIONS BELOW
-        self._design_packing_media()
-        self._design_GAC()
+
+        D['Wall concrete [ft3]'], \
+        D['Slab concrete [ft3]'], \
+        D['Excavation [ft3]'] = func()
+
+        # Optional addition of packing media (used in filters)
+        D['Packing LDPE [m3]'], \
+        D['Packing HDPE [m3]'] = self._design_packing_media()
+
+        # Optional addition of GAC
+        D['GAC [kg]'] = self._design_GAC()
 
         # Step B: Membrane
         # Call the corresponding design function
         # (_design_hollow_fiber, _design_flat_sheet, or _design_multi_tube)
         m_type = format_str(self.membrane_type)
         func = getattr(self, f'_design_{m_type}')
-        func()
+        D['Membrane [m3]'] = func()
 
         # Step C: Pumps
-        self._design_pump()
+        D['Pipe stainless steel [kg]'], \
+        D['Pump stainless steel [kg]'], \
+        D['Pump chemical storage HDPE [m3]'] = self._design_pump()
 
         # Step D: Degassing membrane
+        D['Degassing membrane'] = self.N_degasser
 
 
     ### Step A functions ###
@@ -417,12 +449,11 @@ class AnMBR(bst.Unit):
         W_PB, W_BB, D_tank = self.W_PB, self.W_BB, self.D_tank
         t_wall, t_slab = self.t_wall, self.t_slab
         SL, CA = self.excav_slope, self.constr_access
-        D = self.design_results
 
         ### Concrete calculation ###
         W_N_trains = (self.W_train+2*t_wall)*N_train - t_wall*(N_train-1)
 
-        D = D_tank + 2 # 2add  ft of freeboard
+        D = D_tank + 2 # add 2 ft of freeboard
         t = t_wall + t_slab
 
         get_VWC = lambda L1, N: N * t_wall * L1 * D
@@ -457,9 +488,6 @@ class AnMBR(bst.Unit):
         # Total volume of slab concrete [ft3]
         VSC = VSC_dist + VSC_CSTR + VSC_eff + VSC_PBB + VSC_membrane_tank + VSC_well
 
-        D['Wall concrete [ft3]'] = VWC
-        D ['Slab concrete [ft3]'] = VSC
-
         ### Excavation calculation ###
         get_VEX = lambda L_bttom, W_bottom, diff: \
             0.5 * D_tank * (L_bottom*W_bottom+(L_bottom+diff)*(W_bottom+diff)) # bottom+top
@@ -474,63 +502,65 @@ class AnMBR(bst.Unit):
         # Excavation volume for pump/blower building, [ft3]
         VEX_PBB = get_VEX((W_PB+W_BB+2*CA), W_bottom, diff)
 
-        D['Excavation [ft3]'] = VEX_membrane_tank + VEX_PBB
+        VEX = VEX_membrane_tank + VEX_PBB
+
+        return VWC, VSC, VEX
 
 
     # Called by _design
-    def _design_AF(self):
+    def _design_AF(self, D):
         '''NOT READY YET.'''
     #!!! Update/recycle this for AF
-    def _design_anaerobic_filter(
-            self, Q_mgd,
-            Ss, # readily biodegradable (soluble) substrate concentration, [kg COD/m3]
-            Sp, # slowly biodegradable (particulate) substrate concentration, [kg COD/m3]
-            OLR_AF, # organic loading rate, [kg-COD/m3/day]
-            HL_AF, # hydraulic loading rate, [m3/m2/hr]
-            R_AF # recirculation ratio
-            ):
+    # def _design_anaerobic_filter(
+    #         self, Q_mgd,
+    #         Ss, # readily biodegradable (soluble) substrate concentration, [kg COD/m3]
+    #         Sp, # slowly biodegradable (particulate) substrate concentration, [kg COD/m3]
+    #         OLR_AF, # organic loading rate, [kg-COD/m3/day]
+    #         HL_AF, # hydraulic loading rate, [m3/m2/hr]
+    #         R_AF # recirculation ratio
+    #         ):
 
-        ### Filter material ###
-        N_AF = 2
-        Q_cmd = self.Q_cmd
-        # Volume of packing media in each filter, [m3]
-        V_m_AF = (Q_cmd/N_AF) * (Ss+Sp) / OLR_AF
-        # Diameter (d) / depth (D) of each filter, [m]
-        d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
+    #     ### Filter material ###
+    #     N_AF = 2
+    #     Q_cmd = self.Q_cmd
+    #     # Volume of packing media in each filter, [m3]
+    #     V_m_AF = (Q_cmd/N_AF) * (Ss+Sp) / OLR_AF
+    #     # Diameter (d) / depth (D) of each filter, [m]
+    #     d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
 
-        while D_AF > 6: # assumed maximum depth assumption, [m]
-            R_AF = R_AF + 0.1;
-            d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
+    #     while D_AF > 6: # assumed maximum depth assumption, [m]
+    #         R_AF = R_AF + 0.1;
+    #         d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF, V_m_AF)
 
-            while d_AF > 12: # assumed maximum diameter, [m]
-                N_AF = N_AF + 1;
-                d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF)
+    #         while d_AF > 12: # assumed maximum diameter, [m]
+    #             N_AF = N_AF + 1;
+    #             d_AF, D_AF = _get_d_AF(Q_cmd, R_AF, N_AF, HL_AF)
 
-        # Unit conversion
-        d_AF /= _ft_to_m # [ft]
-        D_AF /= _ft_to_m # [ft]
-        V_m_AF /= _ft3_to_m3 # [ft3]
+    #     # Unit conversion
+    #     d_AF /= _ft_to_m # [ft]
+    #     D_AF /= _ft_to_m # [ft]
+    #     V_m_AF /= _ft3_to_m3 # [ft3]
 
-        ### Concrete material ###
-        # External wall concrete, [ft3]
-        # 6/12 is wall thickness and 3 is freeboard
-        VWC_AF = N_AF * 6/12 * math.pi * d_AF * (D_AF+3)
-        VWC_AF *= N_AF
-        # Floor slab concrete, [ft3]
-        # 8/12 is slab thickness
-        VSC_AF = _d_to_A(d_AF)+ 8/12 * _d_to_A(d_AF)
-        VSC_AF *= N_AF
+    #     ### Concrete material ###
+    #     # External wall concrete, [ft3]
+    #     # 6/12 is wall thickness and 3 is freeboard
+    #     VWC_AF = N_AF * 6/12 * math.pi * d_AF * (D_AF+3)
+    #     VWC_AF *= N_AF
+    #     # Floor slab concrete, [ft3]
+    #     # 8/12 is slab thickness
+    #     VSC_AF = _d_to_A(d_AF)+ 8/12 * _d_to_A(d_AF)
+    #     VSC_AF *= N_AF
 
-        ### Excavation ###
-        SL = 1.5 # slope = horizontal/vertical
-        CA = 3 # construction Access, [ft]
-        #  Excavation of pump building
-        PBL, PBW, PBD = 50, 30, 10 # pump building length, width, depth, [ft]
-        Area_B_P = (PBL+2*CA) * (PBW+2*CA) # bottom area of frustum, [ft2]
-        Area_T_P = (PBL+2*CA+PBW*SL) * (PBW+2*CA+PBD*SL) # top area of frustum, [ft2]
-        VEX_PB = 0.5 * (Area_B_P+Area_T_P) * PBD # total volume of excavaion, [ft3]
+    #     ### Excavation ###
+    #     SL = 1.5 # slope = horizontal/vertical
+    #     CA = 3 # construction Access, [ft]
+    #     #  Excavation of pump building
+    #     PBL, PBW, PBD = 50, 30, 10 # pump building length, width, depth, [ft]
+    #     Area_B_P = (PBL+2*CA) * (PBW+2*CA) # bottom area of frustum, [ft2]
+    #     Area_T_P = (PBL+2*CA+PBW*SL) * (PBW+2*CA+PBD*SL) # top area of frustum, [ft2]
+    #     VEX_PB = 0.5 * (Area_B_P+Area_T_P) * PBD # total volume of excavaion, [ft3]
 
-        return N_AF, d_AF, D_AF, V_m_AF, VWC_AF, VWC_AF, VEX_PB
+    #     return N_AF, d_AF, D_AF, V_m_AF, VWC_AF, VWC_AF, VEX_PB
 
 
     # Called by _design_CSTR/_design_AF
@@ -553,21 +583,28 @@ class AnMBR(bst.Unit):
         return VWC_membrane_tank, VSC_membrane_tank, VWC_well, VSC_well
 
 
-    # Called by _design_AF
-    def _design_packing_media(self, V):
-        # Assume 50%/50% wt/wt LDPE/HDPE
-        # 0.9 is void fraction, usually 85% - 95% for plastic packing media
-        # 925 is density of LDPE (910-940), [kg/m3]
-        # 950 is density of LDPE (930-970), [kg/m3]
-        # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
-        # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
-        return 46.25*V, 47.5*V
+    # # Called by _design_AF
+    # def _design_packing_media(self, V):
+    #     V = 0.
+    #     if self.reactor_type == 'AF':
+    #         V += self.V #!!! replace with AF volume, [ft3]
+
+    #     if self.include_aerobic_filter:
+    #         V += self.V #!!! replace with AER volume, [ft3]
+
+    #     # Assume 50%/50% vol/vol LDPE/HDPE
+    #     # 0.9 is void fraction, usually 85% - 95% for plastic packing media
+    #     # 925 is density of LDPE (910-940), [kg/m3] (not used)
+    #     # 950 is density of LDPE (930-970), [kg/m3] (not used)
+    #     # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
+    #     # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
+    #     return 0.05*V, 0.05*V # LDPE, HDPE
 
 
     # Called by _design
     def _design_GAC(self):
         if not self.add_GAC:
-            return 0.
+            return 0
 
         M_GAC = 1
         return M_GAC
@@ -585,20 +622,20 @@ class AnMBR(bst.Unit):
 
 
     # Called by _design
-    def _design_multi_tube(self,):
-        # # 263.05 is volume of material for each membrane tube, [m3]
+    def _design_multi_tube(self):
+        # # 0.01478 is volume of material for each membrane tube, [m3]
         # #      L_tube               OD        ID
         # V_tube = 3 * math.pi/4 * ((6e-3)**2-(5.2e-3)**2)
         # V_SU = 700 * V_tube # V for each small unit [m3]
-        # M_SU = 1.78*10e3 * V_SU # mass = density*volume, [kg/m3]
-        self.design_results['Membrane [kg]'] = self.N_mod_tot*263.05
+        # M_SU = 1.78*1e3 * V_SU # mass = density*volume, [kg/m3], not used
+        return self.N_mod_tot*0.01478
 
 
     ### Step C function ###
     # Called by _design
     def _design_pump(self):
         rx_type, m_config = self.reactor_type, self.membrane_configuration
-        pumps = (None, None, None, None, ()) # the last one is for chemical pumping
+        pumps = (None, None, None, (), ()) # multiples for AF-AeF/chemical
 
         # Permeate
         add_inputs = (self.cas_per_tank, self.D_tank, self.TMP_anaerobic,
@@ -624,12 +661,19 @@ class AnMBR(bst.Unit):
 
         # Lift, only relevant to AF reactors
         if rx_type == 'AF':
-            #!!! Need updating, might need two lift, if ANA and AER are both used
-            add_inputs = (self.cas_per_tank,)
-            pumps[3] = WWTpump(ID=f'{self.ID}_lift',
-                               ins=self.ins[0].proxy(), # ???
-                               pump_type='lift_AF',
-                               add_inputs=add_inputs)
+            AF = self.AF
+            add_inputs = (AF.N_filter, AF.D)
+            pumps[3][0] = WWTpump(ID=f'{self.ID}_lift_AF',
+                                  ins=self.AF.ins[0].proxy(),
+                                  pump_type='lift_AF',
+                                  add_inputs=add_inputs)
+            if self.include_aerobic_filter:
+                AeF = self.AeF
+                add_inputs = (AeF.N_filter, AeF.D)
+                pumps[3][1] = WWTpump(ID=f'{self.ID}_lift_AeF',
+                                      ins=AeF.ins[0].proxy(),
+                                      pump_type='lift',
+                                      add_inputs=add_inputs)
 
         # Chemical (stroage included)
         pumps[4][0] = WWTpump(ID=f'{self.ID}_naocl',
@@ -651,25 +695,29 @@ class AnMBR(bst.Unit):
         self._pump_dct = dict.fromkeys(
             ('permeate', 'retentate', 'recirculation', 'lift', 'chemical'), pumps)
 
-        pipe_ss, pump_ss, hpde = 0., 0., 0.
+        pipe_ss, pump_ss, hdpe = 0., 0., 0.
         for p in pumps:
-            if p is not None:
-                if not isinstance(p, Iterable):
-                    p.simulate()
-                    pipe_ss += p.design_results['Pipe stainless steel [kg]']
-                    pump_ss += p.design_results['Pump stainless steel [kg]']
-                else:
-                    for cp in p:
-                        hpde += cp.design_results['Chemical storage HPDE [kg]']
+            if p is None:
+                continue
+            if not isinstance(p, Iterable):
+                p.simulate()
+                pipe_ss += p.design_results['Pipe stainless steel [kg]']
+                pump_ss += p.design_results['Pump stainless steel [kg]']
+            else:
+                for ip in p:
+                    if ip is None:
+                        continue
+                    pipe_ss += ip.design_results['Pipe stainless steel [kg]']
+                    pump_ss += ip.design_results['Pump stainless steel [kg]']
+                    if ip.get('Chemical storage HDPE [m3]'):
+                        hdpe += ip.design_results['Chemical storage HDPE [m3]']
 
-        D = self.design_results
-        D['Pipe stainless steel [kg]'] = pipe_ss
-        D['Pump stainless steel [kg]'] = pump_ss
-        D['Pump chemical storage HPDE [kg]'] = hpde
+        return pipe_ss, pump_ss, hdpe
 
 
-
-
+    # =========================================================================
+    # _cost
+    # =========================================================================
     def _cost(self):
         D, C, BM, lifetime = self.design_results, self.purchase_costs, \
             self._F_BM_default, self._default_equipment_lifetime
@@ -682,16 +730,21 @@ class AnMBR(bst.Unit):
         C['Wall concrete'] = VWC / 27 * 650
         C['Slab concrete'] = VSC / 27 * 350
 
-
         # Membrane
-
+        # TODO: now assume $8/ft2 for all membrane materials,
+        # maybe check the price for different materials
+        C['Membrane'] = 8 * _ft2_to_m2 * D['Membrane [m3]']
+        BM['Membrane'] = 1 + 0.15 # assume 15% for replacement labor
+        lifetime['Membrane'] = 10
 
         # GAC
-        # 'GAC': 6.2 / _lb_per_kg,
+        # $13.78/kg
+        C['GAC'] = 13.78 * D['GAC [kg]']
 
         # Packing material
-        packing_per_cft = 5.5
-
+        # 195 is the cost of both LDPE and HDPE in $/m3
+        C['Packing LDPE'] = 195 * D['Packing LDPE [m3]']
+        C['Packing HDPE'] = 195 * D['Packing HDPE [m3]']
 
         # Pump
         # Note that maintenance and operating costs are included as a lumped
@@ -712,52 +765,58 @@ class AnMBR(bst.Unit):
         lifetime['Blowers'] = 15
 
         # Degassing membrame
-
+        C['Degassing membrane'] = 10000 * D['Degassing membrane']
 
         # Set bare module factor to 1 if not otherwise provided
         for k in C.keys():
             BM[k] = 1 if not BM.get(k) else BM.get(k)
 
-
         ### Power ###
-        pump_power, pump_cost = 0., 0.
+        pump_power = 0.
+        for k, v in self.pump_dct.items():
+            if not v:
+                continue
+            if isinstance(Iterable, v):
+                pump_power += sum(i.power_utility.rate for i in v)
 
-        pump_power = sum(v.power_utility.rate for v in self.pump_dct.values())
-        # sparging_power =
+            pump_power += v.power_utility.rate
+
+        # sparging_power = #!!! output from submerge design
         degassing_power = 3 * self.N_degasser # assume each uses 3 kW
 
         self.power_utility.rate = pump_power + degassing_power #!!! also sparging, etc.
 
 
     # Called by _cost
-    def _cost_pump(self):
-        Q_mgd, recir_ratio = self.Q_mgd, self.recir_ratio
+    _cost_pump = FilterTank._cost_pump
+    # def _cost_pump(self):
+    #     Q_mgd, recir_ratio = self.Q_mgd, self.recir_ratio
 
-        # Installed pump cost, this is a fitted curve
-        pumps = 2.065e5 + 7.721*1e4*Q_mgd
+    #     # Installed pump cost, this is a fitted curve
+    #     pumps = 2.065e5 + 7.721*1e4*Q_mgd
 
-        # Design capacity of intermediate pumps, gpm,
-        # 2 is the excess capacity factor to handle peak flows
-        GPMI = 2 * Q_mgd * 1e6 / 24 / 60
+    #     # Design capacity of intermediate pumps, gpm,
+    #     # 2 is the excess capacity factor to handle peak flows
+    #     GPMI = 2 * Q_mgd * 1e6 / 24 / 60
 
-        # Design capacity of recirculation pumps, gpm
-        GPMR = recir_ratio * Q_mgd * 1e6 / 24 / 60
+    #     # Design capacity of recirculation pumps, gpm
+    #     GPMR = recir_ratio * Q_mgd * 1e6 / 24 / 60
 
-        building = 0.
-        for GPM in (GPMI, GPMR):
-            if GPM == 0:
-                N = 0
-            else:
-                N = 1 # number of buildings
-                GPMi = GPM
-                while GPMi > 80000:
-                    N += 1
-                    GPMi = GPM / N
+    #     building = 0.
+    #     for GPM in (GPMI, GPMR):
+    #         if GPM == 0:
+    #             N = 0
+    #         else:
+    #             N = 1 # number of buildings
+    #             GPMi = GPM
+    #             while GPMi > 80000:
+    #                 N += 1
+    #                 GPMi = GPM / N
 
-            PBA = N * (0.0284*GPM+640) # pump building area, [ft]
-            building += 90 * PBA
+    #         PBA = N * (0.0284*GPM+640) # pump building area, [ft]
+    #         building += 90 * PBA
 
-        return pumps, building
+    #     return pumps, building
 
 
     # Called by _cost
@@ -866,7 +925,7 @@ class AnMBR(bst.Unit):
     @property
     def N_train(self):
         '''[int] Number of treatment train.'''
-        return self._N_train
+        return self._N_train or self._N_train_min
     @N_train.setter
     def N_train(self, i):
         self._N_train = math.ceil(i)
@@ -937,7 +996,7 @@ class AnMBR(bst.Unit):
         '''[float] Length of the CSTR tank, [ft].'''
         if self.reactor_type == 'AF':
             return 0
-        return self.ins[0].F_vol/_ft3_to_m3*self.HRT/(self.N_train*self.W_tank*self.D_tank)
+        return self._inf.F_vol/_ft3_to_m3*self.HRT/(self.N_train*self.W_tank*self.D_tank)
 
     @property
     def L_membrane_tank(self):
@@ -1127,7 +1186,7 @@ class AnMBR(bst.Unit):
         '''
         [float] Influent volumetric flow rate in million gallon per day, [mgd].
         '''
-        return self.ins[0].F_vol*_m3_to_gal*24/1e6
+        return self._inf.F_vol*_m3_to_gal*24/1e6
 
     @property
     def Q_gpm(self):
@@ -1181,7 +1240,7 @@ class AnMBR(bst.Unit):
         '''[float] Membrane flux, [L/m2/hr].'''
         # Based on the flux of one train being offline
         SA = (self.N_train-1) * self.cas_per_tank * self.mod_per_cas * self.mod_surface_area
-        return self.ins[0].F_vol*1e3/SA # 1e3 is conversion from m3 to L
+        return self._inf.F_vol*1e3/SA # 1e3 is conversion from m3 to L
 
     @property
     def TMP_anaerobic(self):
@@ -1278,17 +1337,12 @@ class AnMBR(bst.Unit):
 
     @property
     def Y(self):
-        '''
-        [float] Biomass yield, [kg biomass/kg consumed COD].
-        .. note::
-            This yield is considered as the "synthesis"
-
-        '''
+        '''[float] Biomass yield, [kg biomass/kg consumed COD].'''
         return self._Y
     @Y.setter
     def Y(self, i):
-        if i < 0:
-            raise ValueError('`Y` should be >= 0, '
+        if not 0 <= i <= 1:
+            raise ValueError('`Y` should be within [0, 1], '
                              f'the input value {i} is outside the range.')
         self._Y = i
 
@@ -1309,6 +1363,6 @@ class AnMBR(bst.Unit):
     @property
     def organic_rm(self):
         '''[float] Overall organic (COD) removal rate.'''
-        Qi, Qe = self.ins[0].F_vol, self.outs[1].F_vol
-        Si, Se = self.compute_COD(self.ins[0]), self.compute_COD(self.outs[1].F_vol)
+        Qi, Qe = self._inf.F_vol, self.outs[1].F_vol
+        Si, Se = self.compute_COD(self._inf), self.compute_COD(self.outs[1].F_vol)
         return 1 - Qe*Se/(Qi*Si)

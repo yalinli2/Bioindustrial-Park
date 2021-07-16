@@ -62,14 +62,14 @@ from biorefineries.lipidcane._process_settings import (
     )
 
 from utils import auom
-_lb_per_kg = auom('kg').conversion_factor('lb')
+_lb_per_kg = auom('lb').conversion_factor('kg')
 _GDP_2007to2016 = 1.160
 
-new_price = {
+new_price = { # $/kg unless otherwise noted
     'Wastewater': -0.03, # ref [1], negative value for cost from product,
-    'NaOCl': 0.14,
-    'CitricAcid': 0.22,
-    'Bisulfite': 0.08,
+    'NaOCl': 0.14, # $/L
+    'CitricAcid': 0.22, # $/L
+    'Bisulfite': 0.08, # $/L
     'Caustics': cs.caustic.price,
-    'Polymer': 2.6282 * _lb_per_kg / _GDP_2007to2016, # ref [2]
+    'Polymer': 2.6282 / _lb_per_kg / _GDP_2007to2016, # ref [2]
     }

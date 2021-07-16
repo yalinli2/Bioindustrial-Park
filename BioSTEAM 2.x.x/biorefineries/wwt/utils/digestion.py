@@ -172,8 +172,8 @@ def get_digestion_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
         BD = dict.fromkeys([i.ID for i in chems], BD)
 
     if X_biogas+X_growth > 1:
-        raise ValueError(f'Sum of `X_biogas` and `X_biogas` is {X_biogas+X_growth}, '
-                         'larger than 100%.')
+        raise ValueError('Sum of `X_biogas`/`X_decomp` and `X_biogas` is '
+                         f'{X_biogas+X_growth}, larger than 100%.')
 
     biogas_rxns = []
     growth_rxns = []

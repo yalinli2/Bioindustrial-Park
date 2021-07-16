@@ -17,17 +17,26 @@ from . import (
     utils,
     _settings,
     _internal_circulation_rx,
+    _wwt_pump,
+    _filter_tank,
+    _membrane_bioreactor,
     _wwt_sys,
     )
 
 from ._chemicals import *
 from ._settings import *
 from ._internal_circulation_rx import *
+from ._wwt_pump import *
+from ._filter_tank import *
+from ._membrane_bioreactor import *
 from ._wwt_sys import *
 
 __all__ = (
     *_chemicals.__all__,
     *_settings.__all__,
     *_internal_circulation_rx.__all__,
+    *_wwt_pump.__all__,
+    *_filter_tank.__all__,
+    *_membrane_bioreactor.__all__,
     *_wwt_sys.__all__,
     )

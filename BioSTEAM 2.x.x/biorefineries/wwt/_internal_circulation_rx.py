@@ -109,7 +109,7 @@ class InternalCirculationRx(bst.MixTank):
     5th ed.; McGraw-Hill Education: New York, 2013.
     '''
     _N_ins = 1
-    _N_outs = 3
+    _N_outs = 3 # biogas, effluent, waste sludge
 
     # Assumptions
     _q_Qw = 0.01
@@ -147,7 +147,6 @@ class InternalCirculationRx(bst.MixTank):
         # Initiate the attributes
         self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
         self.heat_utilities = hx.heat_utilities
-        # self._digestion_rxns = None
 
         # Reactions
         self._refresh_rxns()
@@ -208,8 +207,6 @@ class InternalCirculationRx(bst.MixTank):
             for rxns in (growth_rxns, biogas_rxns):
                 rxns(waste.mol)
                 rxns(eff.mol)
-            # digestion_rxns(waste.mol)
-            # digestion_rxns(eff.mol)
 
         biogas.receive_vent(eff, accumulate=True)
         biogas.receive_vent(waste, accumulate=True)
@@ -363,17 +360,12 @@ class InternalCirculationRx(bst.MixTank):
 
     @property
     def Y(self):
-        '''
-        [float] Biomass yield, [kg biomass/kg consumed COD].
-        .. note::
-            This yield is considered as the "synthesis"
-
-        '''
+        '''[float] Biomass yield, [kg biomass/kg consumed COD].'''
         return self._Y
     @Y.setter
     def Y(self, i):
-        if i < 0:
-            raise ValueError('`Y` should be >= 0, '
+        if not 0 <= i <= 1:
+            raise ValueError('`Y` should be within [0, 1], '
                              f'the input value {i} is outside the range.')
         self._Y = i
 
