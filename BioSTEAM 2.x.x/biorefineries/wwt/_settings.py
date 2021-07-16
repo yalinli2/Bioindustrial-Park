@@ -24,6 +24,11 @@ Biomass to Hydrocarbon Fuels and Coproducts: 2018 Biochemical Design Case Update
 NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
 https://doi.org/10.2172/1483234.
 
+[3] Shoener et al., Design of Anaerobic Membrane Bioreactors for the
+Valorization of Dilute Organic Carbon Waste Streams.
+Energy Environ. Sci. 2016, 9 (3), 1102–1112.
+https://doi.org/10.1039/C5EE03715H.
+
 .. note::
     The cornstover biorefinery uses 2011 USD whereas sugarcane and lipidcane
     biorefineries use 2013 USD, thus ideallly prices in the the `new_price` dct
@@ -61,7 +66,10 @@ _lb_per_kg = auom('kg').conversion_factor('lb')
 _GDP_2007to2016 = 1.160
 
 new_price = {
-    'Caustics': cs.caustic.price,
     'Wastewater': -0.03, # ref [1], negative value for cost from product,
+    'NaOCl': 0.14,
+    'CitricAcid': 0.22,
+    'Bisulfite': 0.08,
+    'Caustics': cs.caustic.price,
     'Polymer': 2.6282 * _lb_per_kg / _GDP_2007to2016, # ref [2]
     }

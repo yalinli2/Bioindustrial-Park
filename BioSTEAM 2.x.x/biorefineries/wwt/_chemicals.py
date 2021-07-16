@@ -79,6 +79,7 @@ def add_wwt_chemicals(chemicals):
     chemical_database('CaSO4', phase='s', Hf=-342531*_cal2joule)
     chemical_database('NaOCl', phase='l', Hf=-347.1e3) # https://en.wikipedia.org/wiki/Sodium_hypochlorite
     chemical_database('CitricAcid', phase='l', Hf=-347.1e3)
+    chemical_database('Bisulfite', phase='l')
 
     chems.CaSO4.Cn.move_up_model_priority('Lastovka solid', 0)
 

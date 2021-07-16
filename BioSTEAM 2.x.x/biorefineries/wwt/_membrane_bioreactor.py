@@ -46,6 +46,7 @@ _ft3_to_m3 = auom('ft3').conversion_factor('m3')
 _ft3_to_gal = auom('ft3').conversion_factor('gallon')
 _m3_to_gal = auom('m3').conversion_factor('gal')
 _cmh_to_mgd = _m3_to_gal * 24 / 1e6 # cubic meter per hour to million gallon per day
+_lb_to_kg = auom('lb').conversion_factor('kg')
 
 _d_to_A = lambda d: math.pi/4*(d**2)
 _A_to_d = lambda A: ((4*A)/math.pi)**0.5
@@ -116,7 +117,7 @@ class AnMBR(bst.Unit):
     National Renewable Energy Lab (NREL), 2011.
     https://www.nrel.gov/docs/fy11osti/47764.pdf
     '''
-    _N_ins = 4
+    _N_ins = 5
     _N_outs = 4
 
     # Equipment-related parameters
@@ -166,24 +167,7 @@ class AnMBR(bst.Unit):
     _v_cross_flow = 3
     _v_GAC = 8
     _SGD = 1.7
-
-
-
-
-
-    #!!! Related to the A_B_script, might not need this
-    # # Kinetic and stoichiometric parameters
-    # q_hat = 12 # [mg BOD/mg VSS-d]
-    # K = 20 # [mg COD/L]
-    # Y = 0.5 # biomass yield [mg TSS/mg BOD]
-    # b = 0.396 # biomass decay, [1/d]
-    # f_d = 0.2 # fraction of biomass that remains as cell debris
-    # q_UAP = 1.8 # utilization-associated products, [mg COD/mg VSS-d]
-    # q_BAP = 0.1 # biomass-associated products, [mg COD/mg VSS-d]
-    # K_UAP = 100 # [mg COD/L]
-    # K_BAP = 85 # [mg COD/L]
-    # k1 = 0.12 # [mg COD/mg BOD]
-    # k2 = 0.09 # [mg COD/mg VSS-d]
+    _AFF = 3.33
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
@@ -255,9 +239,8 @@ class AnMBR(bst.Unit):
                                   f'not "{m_material}".')
 
 
-
     def _run(self):
-        inf, naocl, citric, air_in = self.ins
+        inf, naocl, citric, bisulfite, air_in = self.ins
         biogas, perm, sludge, air_out = self.outs
         chems = self.chemicals
         Q_mgd = self.Q_mgd
@@ -265,27 +248,25 @@ class AnMBR(bst.Unit):
         # Chemicals for cleaning
         # Assume both chemicals are used up
         # 2200 gal/yr/mgd of 12.5 wt% solution, 15% by volume
-        #!!! The original codes seem to have a bug in calculating NaOCl quantity
-        dose_naocl = (2200*Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
-        naocl.imass['NaOCl'] = dose_naocl * 0.125
-        naocl.imass['H2O'] = dose_naocl - naocl.imass['NaOCl']
+        # Note that the original codes seem to have a bug in computing NaOCl quantity
+        naocl_solution = (2200*Q_mgd) / _m3_to_gal * 1e3 / 365 / 24 # kg/hr solution
+        naocl.imass['NaOCl'] = 0.125 * naocl_solution
+        naocl.imass['H2O'] = naocl_solution - naocl.imass['NaOCl']
 
         # 600 gal/yr/mgd of 100% solution, 13.8 lb/gal
         citric.imass['CitricAcid'] = (600*Q_mgd) * \
-            (13.8*auom('lb').conversion_factor('kg')) / 365 / 24 # kg/hr solution
+            (13.8*_lb_to_kg) / 365 / 24 # kg/hr solution
 
-        # Gas for sparging
+        # 350 gal/yr/mgd of 38% solution, 3.5 lb/gal
+        bisulfite_solution = (350*Q_mgd) * (3.5*_lb_to_kg) / 365 / 24 # kg/hr solution
+        bisulfite.imass['Bisulfite'] = 0.38 *bisulfite_solution
+        bisulfite.imass['H2O'] = bisulfite_solution - bisulfite.imass['Bisulfite']
+
+        # Gas for sparging, no sparging needed if submerged or using GAC
         air_out.link(air_in)
         air_in.T = 17 + 273.15
-        if not self.add_GAC and self.membrane_configuration=='submerged':
-            gas_ft3_min = self._compute_gas_demand()
-            self._design_blower(gas_ft3_min)
-
-            gas_m3_hr = gas_ft3_min / _ft3_to_m3 * 60 # ft3/min to m3/hr
-            air_in.ivol['N2'] = 0.79
-            air_in.ivol['O2'] = 0.21
-            air_in.F_vol = gas_m3_hr
-
+        if (not self.add_GAC) or (self.membrane_configuration=='submerged'):
+            self._design_blower()
         else:
             air_in.empty()
 
@@ -316,11 +297,7 @@ class AnMBR(bst.Unit):
         perm.T = sludge.T = biogas.T = air_out.T = self.T
 
 
-    @staticmethod
-    def compute_COD(stream):
-        return compute_stream_COD(stream)
-
-
+    # Called by _run
     def _compute_mod_case_tank_N(self):
         mod_per_cas_range, cas_per_tank_range = \
             self.mod_per_cas_range, self.cas_per_tank_range
@@ -341,6 +318,7 @@ class AnMBR(bst.Unit):
                     mod_per_cas = mod_per_cas_range[0]
 
 
+    # Called by _run
     def _compute_liq_flows(self):
         m_config = self.membrane_configuration
 
@@ -368,17 +346,13 @@ class AnMBR(bst.Unit):
         return Q_R_mgd, Q_IR_mgd
 
 
-    #!!! No sparging if submerged or using GAC
-    # Maybe make blower an another class
-    def _compute_gas_demand(self): # for sparging
+    # Called by _run
+    def _design_blower(self):
         gas = self.SGD * self.mod_surface_area*_ft2_to_m2 # [m3/h]
         gas /= (_ft3_to_m3 * 60) # [ft3/min]
         gas_train = gas * self.N_train*self.cas_per_tank*self.mod_per_cas
-        return math.ceil(gas_train)
 
-
-    def _compute_blower_N(self, gas_ft3_min):
-        TCFM = gas_ft3_min # total cubic ft per min
+        TCFM = math.ceil(gas_train) # total cubic ft per min
         N = 1
         if TCFM <= 30000:
             CFMB = TCFM / N # cubic ft per min per blower
@@ -396,25 +370,46 @@ class AnMBR(bst.Unit):
                 N += 1
                 CFMB = TCFM / N
 
-        self._N_blower = N + 1 # add a spare
+        gas_m3_hr = TCFM / _ft3_to_m3 * 60 # ft3/min to m3/hr
+        air = self.ins[-1]
+        air.ivol['N2'] = 0.79
+        air.ivol['O2'] = 0.21
+        air.F_vol = gas_m3_hr
+
+        D = self.design_results
+        D['Total air flow [CFM]'] = TCFM
+        D['Blower capacity [CFM]'] = CFMB
+        D['Number of blowers'] = self._N_blower = N + 1 # add a spare
+
+
 
 
     def _design(self):
-        D = self.design_results
-        self._design_reactor()
-        self._design_membrane()
-        self._design_pumps()
-
-        D['Blower'] = self.N_blower
-
-    ### Reactor and membrane tanks ###
-    def _design_reactor(self):
+        #  Step A: Reactor and membrane tanks
         # Call the corresponding design function
         # (_design_CSTR or _design_AF)
         func = getattr(self, f'_design_{self.reactor_type}')
         func()
+        #!!! PAUSED
+        # CONTINUE ON THE FUNCTIONS BELOW
+        self._design_packing_media()
+        self._design_GAC()
+
+        # Step B: Membrane
+        # Call the corresponding design function
+        # (_design_hollow_fiber, _design_flat_sheet, or _design_multi_tube)
+        m_type = format_str(self.membrane_type)
+        func = getattr(self, f'_design_{m_type}')
+        func()
+
+        # Step C: Pumps
+        self._design_pump()
+
+        # Step D: Degassing membrane
 
 
+    ### Step A functions ###
+    # Called by _design
     def _design_CSTR(self):
         N_train = self.N_train
         L_dist, L_CSTR , L_eff, L_membrane_tank = \
@@ -462,7 +457,8 @@ class AnMBR(bst.Unit):
         # Total volume of slab concrete [ft3]
         VSC = VSC_dist + VSC_CSTR + VSC_eff + VSC_PBB + VSC_membrane_tank + VSC_well
 
-        D['Tank concrete (ft3)'] = VWC + VSC
+        D['Wall concrete [ft3]'] = VWC
+        D ['Slab concrete [ft3]'] = VSC
 
         ### Excavation calculation ###
         get_VEX = lambda L_bttom, W_bottom, diff: \
@@ -478,9 +474,10 @@ class AnMBR(bst.Unit):
         # Excavation volume for pump/blower building, [ft3]
         VEX_PBB = get_VEX((W_PB+W_BB+2*CA), W_bottom, diff)
 
-        D['Excavation (ft3)'] = VEX_membrane_tank + VEX_PBB
+        D['Excavation [ft3]'] = VEX_membrane_tank + VEX_PBB
 
 
+    # Called by _design
     def _design_AF(self):
         '''NOT READY YET.'''
     #!!! Update/recycle this for AF
@@ -495,7 +492,7 @@ class AnMBR(bst.Unit):
 
         ### Filter material ###
         N_AF = 2
-        Q_cmd = Q_mgd *1e6/_m3_to_gal # [m3/day]
+        Q_cmd = self.Q_cmd
         # Volume of packing media in each filter, [m3]
         V_m_AF = (Q_cmd/N_AF) * (Ss+Sp) / OLR_AF
         # Diameter (d) / depth (D) of each filter, [m]
@@ -536,18 +533,6 @@ class AnMBR(bst.Unit):
         return N_AF, d_AF, D_AF, V_m_AF, VWC_AF, VWC_AF, VEX_PB
 
 
-
-    def _design_packing_media(self, V):
-        # Assume 50%/50% wt/wt LDPE/HDPE
-        # 0.9 is void fraction, usually 85% - 95% for plastic packing media
-        # 925 is density of LDPE (910-940), [kg/m3]
-        # 950 is density of LDPE (930-970), [kg/m3]
-        # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
-        # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
-        return 46.25*V, 47.5*V
-
-
-
     # Called by _design_CSTR/_design_AF
     def _design_membrane_tank(self, D, N_train, W_N_trains, L_membrane_tank,
                               t_wall, t_slab):
@@ -568,33 +553,49 @@ class AnMBR(bst.Unit):
         return VWC_membrane_tank, VSC_membrane_tank, VWC_well, VSC_well
 
 
-    ### Membrane ###
-    def _design_membrane(self):
-        # Call the corresponding design function
-        # (_design_hollow_fiber, _design_flat_sheet, or _design_multi_tube)
-        m_type = format_str(self.membrane_type)
-        func = getattr(self, f'_design_{m_type}')
-        func()
+    # Called by _design_AF
+    def _design_packing_media(self, V):
+        # Assume 50%/50% wt/wt LDPE/HDPE
+        # 0.9 is void fraction, usually 85% - 95% for plastic packing media
+        # 925 is density of LDPE (910-940), [kg/m3]
+        # 950 is density of LDPE (930-970), [kg/m3]
+        # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
+        # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
+        return 46.25*V, 47.5*V
 
 
+    # Called by _design
+    def _design_GAC(self):
+        if not self.add_GAC:
+            return 0.
+
+        M_GAC = 1
+        return M_GAC
+
+
+    ### Step B functions ###
+    # Called by _design
     def _design_hollow_fiber(self):
         '''NOT READY YET.'''
 
 
+    # Called by _design
     def _design_flat_sheet(self):
         '''NOT READY YET.'''
 
 
+    # Called by _design
     def _design_multi_tube(self,):
         # # 263.05 is volume of material for each membrane tube, [m3]
         # #      L_tube               OD        ID
         # V_tube = 3 * math.pi/4 * ((6e-3)**2-(5.2e-3)**2)
         # V_SU = 700 * V_tube # V for each small unit [m3]
         # M_SU = 1.78*10e3 * V_SU # mass = density*volume, [kg/m3]
-        self.design_results['Membrane (kg)'] = self.N_mod_tot*263.05
+        self.design_results['Membrane [kg]'] = self.N_mod_tot*263.05
 
 
-    ### Pumps ###
+    ### Step C function ###
+    # Called by _design
     def _design_pump(self):
         rx_type, m_config = self.reactor_type, self.membrane_configuration
         pumps = (None, None, None, None, ()) # the last one is for chemical pumping
@@ -632,12 +633,17 @@ class AnMBR(bst.Unit):
 
         # Chemical (stroage included)
         pumps[4][0] = WWTpump(ID=f'{self.ID}_naocl',
-                           ins=self.ins[2].proxy(), # naocl
+                           ins=self.ins[1].proxy(), # naocl
                            pump_type='chemical',
                            add_inputs={})
 
         pumps[4][1] = WWTpump(ID=f'{self.ID}_citric',
-                           ins=self.ins[3].proxy(), # citric
+                           ins=self.ins[2].proxy(), # citric
+                           pump_type='chemical',
+                           add_inputs={})
+
+        pumps[4][2] = WWTpump(ID=f'{self.ID}_bisulfite',
+                           ins=self.ins[3].proxy(), # bisulfite
                            pump_type='chemical',
                            add_inputs={})
 
@@ -650,28 +656,146 @@ class AnMBR(bst.Unit):
             if p is not None:
                 if not isinstance(p, Iterable):
                     p.simulate()
-                    pipe_ss += p.design_results['Pipe stainless steel (kg)']
-                    pump_ss += p.design_results['Pump stainless steel (kg)']
+                    pipe_ss += p.design_results['Pipe stainless steel [kg]']
+                    pump_ss += p.design_results['Pump stainless steel [kg]']
                 else:
                     for cp in p:
-                        hpde += cp.design_results['Chemical storage HPDE (kg)']
+                        hpde += cp.design_results['Chemical storage HPDE [kg]']
 
         D = self.design_results
-        D['Pipe stainless steel (kg)'] = pipe_ss
-        D['Pump stainless steel (kg)'] = pump_ss
-        D['Pump chemical storage HPDE (kg)'] = hpde
+        D['Pipe stainless steel [kg]'] = pipe_ss
+        D['Pump stainless steel [kg]'] = pump_ss
+        D['Pump chemical storage HPDE [kg]'] = hpde
+
 
 
 
     def _cost(self):
+        D, C, BM, lifetime = self.design_results, self.purchase_costs, \
+            self._F_BM_default, self._default_equipment_lifetime
+
+        ### Capital ###
+        # Concrete and excavaction
+        VEX, VWC, VSC = \
+            D['Excavation [ft3]'], D['Wall concrete [ft3]'], D['Slab concrete [ft3]']
+        C['Reactor excavation'] = VEX / 27 * 8 # 27 is to convert the VEX from ft3 to yard3
+        C['Wall concrete'] = VWC / 27 * 650
+        C['Slab concrete'] = VSC / 27 * 350
+
+
+        # Membrane
+
+
+        # GAC
+        # 'GAC': 6.2 / _lb_per_kg,
+
+        # Packing material
+        packing_per_cft = 5.5
+
+
+        # Pump
+        # Note that maintenance and operating costs are included as a lumped
+        # number in the biorefinery thus not included here
+        # TODO: considering adding the O&M and letting user choose if to include
+        C['Pumps'], C['Pump building'] = self._cost_pump()
+        C['Pump excavation'] = VEX / 27 * 0.3
+
+        BM['Pumps'] = BM['Pump building'] = BM['Pump excavation'] = \
+            1.18 * (1+0.007) # 0.007 is for  miscellaneous costs
+        lifetime['Pumps'] = 15
+
+        # Blower and air pipe
+        TCFM, CFMB = D['Total air flow [CFM]'], D['Blower design capacity [CFM]']
+        C['Air pipes'], C['Blowers'], C['Blower building'] = self._cost_blower(TCFM, CFMB)
+        BM['Blowers'] = 2 * 1.11
+        BM['Blower building'] = 1.11
+        lifetime['Blowers'] = 15
+
+        # Degassing membrame
+
+
+        # Set bare module factor to 1 if not otherwise provided
+        for k in C.keys():
+            BM[k] = 1 if not BM.get(k) else BM.get(k)
+
+
+        ### Power ###
+        pump_power, pump_cost = 0., 0.
+
         pump_power = sum(v.power_utility.rate for v in self.pump_dct.values())
+        # sparging_power =
+        degassing_power = 3 * self.N_degasser # assume each uses 3 kW
 
-        self.power_utility.rate = pump_power #!!! also sparging, etc.
+        self.power_utility.rate = pump_power + degassing_power #!!! also sparging, etc.
 
 
+    # Called by _cost
+    def _cost_pump(self):
+        Q_mgd, recir_ratio = self.Q_mgd, self.recir_ratio
+
+        # Installed pump cost, this is a fitted curve
+        pumps = 2.065e5 + 7.721*1e4*Q_mgd
+
+        # Design capacity of intermediate pumps, gpm,
+        # 2 is the excess capacity factor to handle peak flows
+        GPMI = 2 * Q_mgd * 1e6 / 24 / 60
+
+        # Design capacity of recirculation pumps, gpm
+        GPMR = recir_ratio * Q_mgd * 1e6 / 24 / 60
+
+        building = 0.
+        for GPM in (GPMI, GPMR):
+            if GPM == 0:
+                N = 0
+            else:
+                N = 1 # number of buildings
+                GPMi = GPM
+                while GPMi > 80000:
+                    N += 1
+                    GPMi = GPM / N
+
+            PBA = N * (0.0284*GPM+640) # pump building area, [ft]
+            building += 90 * PBA
+
+        return pumps, building
 
 
+    # Called by _cost
+    def _cost_blower(self, TCFM, CFMB):
+        AFF = self.AFF
 
+        # Air pipes
+        # Note that the original codes use CFMD instead of TCFM for air pipes,
+        # but based on the coding they are equivalent
+        if TCFM <= 1000:
+            air_pipes = 617.2 * AFF * (TCFM**0.2553)
+        elif 1000 < TCFM <= 10000:
+            air_pipes = 1.43 * AFF * (TCFM**1.1337)
+        else:
+            air_pipes = 28.59 * AFF * (TCFM**0.8085)
+
+        # Blowers
+        if TCFM <= 30000:
+            ratio = 0.7 * (CFMB**0.6169)
+            blowers = 58000*ratio / 100
+        elif 30000 < TCFM <= 72000:
+            ratio = 0.377 * (CFMB**0.5928)
+            blowers = 218000*ratio / 100
+        else:
+            ratio = 0.964 * (CFMB**0.4286)
+            blowers  = 480000*ratio / 100
+
+        # Blower building
+        area = 128 * (TCFM**0.256) # building area, [ft2]
+        building = area * 90 # 90 is the unit price, [$/ft]
+
+        return air_pipes, blowers, building
+
+
+    # Util function
+    @staticmethod
+    def compute_COD(stream):
+        return compute_stream_COD(stream)
 
 
     ### Reactor configuration ###
@@ -884,15 +1008,26 @@ class AnMBR(bst.Unit):
         '''
         return self._pump_dct
 
-
     @property
     def N_blower(self):
         '''
         [int] Number of blowers needed for gas sparging
         (not needed for some designs).
+        Note that this is not used in costing
+        (the cost is estimated based on the total sparging gas need).
         '''
         if not self.add_GAC and self.membrane_configuration=='submerged':
             return self._N_blower
+        return 0
+
+    @property
+    def N_degasser(self):
+        '''
+        [int] Number of degassing membrane needed for dissolved biogas removal
+        (not needed for some designs).
+        '''
+        if not self.include_degassing_membrane:
+            return math.ceil(self.Q_cmd/24/30) # assume each can hand 30 m3/d of influent
         return 0
 
     @property
@@ -986,14 +1121,30 @@ class AnMBR(bst.Unit):
         self._constr_access = float(i)
 
 
-
     ### Operation-related parameters ###
     @property
     def Q_mgd(self):
         '''
-        [float] Volumetric flow rate in million gallon per day, [mgd].
+        [float] Influent volumetric flow rate in million gallon per day, [mgd].
         '''
         return self.ins[0].F_vol*_m3_to_gal*24/1e6
+
+    @property
+    def Q_gpm(self):
+        '''[float] Influent volumetric flow rate in gallon per minute, [gpm].'''
+        return self.Q_mgd*1e6/24/60
+
+    @property
+    def Q_cmd(self):
+        '''
+        [float] Influent volumetric flow rate in cubic meter per day, [cmd].
+        '''
+        return self.Q_mgd *1e6/_m3_to_gal # [m3/day]
+
+    @property
+    def Q_cfs(self):
+        '''[float] Influent volumetric flow rate in cubic feet per second, [cfs].'''
+        return self.Q_mgd*1e6/24/60/60/_ft3_to_gal
 
     @property
     def HRT(self):
@@ -1061,6 +1212,20 @@ class AnMBR(bst.Unit):
     @SGD.setter
     def SGD(self, i):
         self._SGD = float(i)
+
+    @property
+    def AFF(self):
+        '''
+        [float] Air flow fraction, used in air pipe costing.
+        The default value is calculated as STE/6
+        (STE stands for standard oxygen transfer efficiency, and default STE is 20).
+        If using different STE value, AFF should be 1 if STE/6<1
+        and 3.33 if STE/6>1.
+        '''
+        return self._AFF
+    @AFF.setter
+    def AFF(self, i):
+        self._AFF = float(i)
 
     @property
     def v_cross_flow(self):

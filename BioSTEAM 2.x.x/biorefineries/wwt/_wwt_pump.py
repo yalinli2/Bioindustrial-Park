@@ -35,6 +35,8 @@ class WWTpump(bst.Unit):
         The following combination is valid:
             - "permeate_cross-flow"
             - "retentate_cross-flow"
+            - "recirculation_CSTR"
+            - "chemical"
     Q_mgd : float
         Volumetric flow rate in million gallon per day, [mgd].
         Will use total volumetric flow through the unit if not provided.
@@ -61,6 +63,8 @@ class WWTpump(bst.Unit):
     _valid_pump_types = (
         'permeate_cross-flow',
         'retentate_cross-flow',
+        'recirculation_CSTR',
+        'chemical'
         )
 
 
@@ -82,8 +86,8 @@ class WWTpump(bst.Unit):
         M_SS_pipe, M_SS_pump = design_func() #!!! need to add in arguments
 
         D = self.design_results
-        D['Pipe stainless steel (kg)'] = M_SS_pipe
-        D['Pump stainless steel (kg)'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
+        D['Pipe stainless steel [kg]'] = M_SS_pipe
+        D['Pump stainless steel [kg]'] = M_SS_pump #!!! need to consider pump's lifetime in LCA
 
 
     def _cost(self):
@@ -112,6 +116,7 @@ class WWTpump(bst.Unit):
         ### Material usage ###
         # Pipe SS, assume stainless steel, density = 0.29 lbs/in3
         # SS volume for suction, [in3]
+        self._N_pump = N_pump
         V_s = N_pump * math.pi/4*((OD_s)**2-(ID_s)**2) * (L_s*12)
         # SS volume for discharge, [in3]
         V_d =math.pi/4*((OD_d)**2-(ID_d)**2) * (L_d*12)
@@ -208,7 +213,7 @@ class WWTpump(bst.Unit):
 
 
     ### Recirculation ###
-    def design_CSTR_recirculation(self, Q_mgd=None, L_CSTR=None):
+    def design_recirculation_CSTR(self, Q_mgd=None, L_CSTR=None):
         '''
         Design pump for the recirculation stream of CSTR reactors.
 
@@ -295,7 +300,7 @@ class WWTpump(bst.Unit):
             H_p=0. # no pressure
             )
 
-        self.design_results['Chemical storage HDPE (kg)'] = M_HDPE
+        self.design_results['Chemical storage HDPE [kg]'] = M_HDPE
 
         return M_SS_CHEM_pipe, M_SS_CHEM_pump
 
@@ -319,6 +324,11 @@ class WWTpump(bst.Unit):
     def valid_pump_types(self):
         '''[tuple] Acceptable pump types.'''
         return self._valid_pump_types
+
+    @property
+    def N_pump(self):
+        '''[int] Number of pumps.'''
+        return self._N_pump
 
     @property
     def H_sf(self):
@@ -354,14 +364,21 @@ class WWTpump(bst.Unit):
         self._Q_mgd = i
 
     @property
-    def Q_cfs(self):
-        '''[float] Volumetric flow rate in cubic feet per second, [cfs].'''
-        return self.Q_mgd*1e6/24/60/60/_ft3_to_gal
-
-    @property
     def Q_gpm(self):
         '''[float] Volumetric flow rate in gallon per minute, [gpm].'''
         return self.Q_mgd*1e6/24/60
+
+    @property
+    def Q_cmd(self):
+        '''
+        [float] Volumetric flow rate in cubic meter per day, [cmd].
+        '''
+        return self.Q_mgd *1e6/_m3_to_gal # [m3/day]
+
+    @property
+    def Q_cfs(self):
+        '''[float] Volumetric flow rate in cubic feet per second, [cfs].'''
+        return self.Q_mgd*1e6/24/60/60/_ft3_to_gal
 
     @property
     def brake_efficiency(self):

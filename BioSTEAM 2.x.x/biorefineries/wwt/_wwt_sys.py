@@ -279,9 +279,14 @@ class ReverseOsmosis(Unit):
 
 def create_wastewater_treatment_units(ins, outs, IC_method,
                                       dry_flow_tpd, need_ammonia):
+    # wwt_streams, naocl, citric = ins[:-2], ins[-2], ins[-1]
     wwt_streams = ins
     biogas, vent_R602, S604_CHP, recycled_water, brine = outs
     vent_R602.phase = 'g'
+
+    naocl_R601 = Stream('caustic_R602', units='kg/hr', price=new_price['NaOCl'])
+    citric_R601 = Stream('citric_R601', units='kg/hr', price=new_price['CitricAcid'])
+
 
     ammonia_R602 = Stream('ammonia_R602', units='kg/hr')
     caustic_R602 = Stream('caustic_R602', units='kg/hr', price=new_price['Caustics'])
@@ -295,6 +300,13 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     R601 = InternalCirculationRx('R601', ins=M601-0,
                                  outs=(biogas, 'IC_eff', 'IC_sludge'),
                                  method=IC_method)
+
+
+
+
+
+
+
 
     R602 = AerobicDigestion('R602',
                             ins=(R601-1, '', caustic_R602,
