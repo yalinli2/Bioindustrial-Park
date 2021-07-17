@@ -77,6 +77,8 @@ class FilterTank(bst.Unit):
 
     _N_filter_min = 2
     _d_max = 12
+    _excav_slope = 1.5
+    _constr_access = 3
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
@@ -112,7 +114,7 @@ class FilterTank(bst.Unit):
             air_in.imol['N2'] = - 0.79/0.21 * inf.imol['O2']
             inf.imol['O2'] = 0
 
-        if self.reactor_type == 'anaerobic':
+        if self.filter_type == 'anaerobic':
             biogas.empty()
             air_out.receive_vent(inf)
         else:
@@ -283,7 +285,9 @@ class FilterTank(bst.Unit):
         # Note that maintenance and operating costs are included as a lumped
         # number in the biorefinery thus not included here
         # TODO: considering adding the O&M and letting user choose if to include
-        C['Pumps'], C['Pump building'] = self._cost_pump()
+        pumps, building = self._cost_pump()
+        C['Pumps'] = pumps
+        C['Pump building'] = building
         C['Pump excavation'] = VEX / 27 * 0.3
 
         BM['Pumps'] = BM['Pump building'] = BM['Pump excavation'] = \
@@ -443,7 +447,7 @@ class FilterTank(bst.Unit):
 
     @property
     def i_rm(self):
-        '''[:class:`np.array`] Removal of each chemical in this reactor.'''
+        '''[:class:`np.array`] Removal of each chemical in this filter tank.'''
         return self._i_rm
 
     @property

@@ -24,7 +24,7 @@ from biorefineries import (
 from _chemicals import create_cs_chemicals
 from _settings import cs_price, load_cs_settings
 from _wwt_sys import create_wastewater_treatment_system
-from utils import kph_to_tpd, get_MESP
+from utils import get_MESP
 
 
 # %%

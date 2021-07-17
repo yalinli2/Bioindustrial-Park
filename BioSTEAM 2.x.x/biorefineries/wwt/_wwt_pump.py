@@ -11,7 +11,10 @@
 
 import math
 import biosteam as bst
-from biosteam.units.design_tools.mechanical import brake_efficiency, motor_efficiency
+from biosteam.units.design_tools.mechanical import (
+    brake_efficiency as brake_eff,
+    motor_efficiency as motor_eff
+    )
 
 #!!! Need to enable relative importing
 from utils import auom, select_pipe, format_str
@@ -34,7 +37,7 @@ class WWTpump(bst.Unit):
         The type of the pump that determines the design algorithms to use.
         The following combination is valid:
             - "permeate_cross-flow"
-            - "retentate_cross-flow"
+            - "retentate_CSTR"
             - "recirculation_CSTR"
             - "lift"
             - "chemical"
@@ -63,7 +66,7 @@ class WWTpump(bst.Unit):
 
     _valid_pump_types = (
         'permeate_cross-flow',
-        'retentate_cross-flow',
+        'retentate_CSTR',
         'recirculation_CSTR',
         'lift',
         'chemical'
@@ -71,7 +74,7 @@ class WWTpump(bst.Unit):
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
-                 pump_type, Q_mgd=None, **add_inputs):
+                 pump_type, Q_mgd=None, add_inputs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.pump_type = pump_type
         self.Q_mgd = Q_mgd
@@ -83,14 +86,16 @@ class WWTpump(bst.Unit):
 
 
     def _design(self):
+
         pump_type = format_str(self.pump_type)
         design_func = getattr(self, f'design_{pump_type}')
 
         D = self.design_results
-        D['Pipe stainless steel [kg]'], \
+        pipe, pumps, hdpe = design_func()
+        D['Pipe stainless steel [kg]'] = pipe
         #!!! need to consider pump's lifetime in LCA
-        D['Pump stainless steel [kg]'], \
-        D['Chemical storage HDPE [m3]'] = design_func()
+        D['Pump stainless steel [kg]'] = pumps
+        D['Chemical storage HDPE [m3]'] = hdpe
 
 
     def _cost(self):
@@ -99,7 +104,7 @@ class WWTpump(bst.Unit):
 
     # Generic algorithms that will be called by all design functions
     def _design_generic(self, Q_mgd, N_pump, L_s, L_d, H_ts, H_p):
-        self.Q_mgd = Q_mgd
+        self.Q_mgd, self._H_ts, self._H_p = Q_mgd, H_ts, H_p
         v, C, Q_cfs = self.v, self.C, self.Q_cfs # [ft/s], -, [ft3/s]
 
         ### Suction side ###
@@ -131,7 +136,7 @@ class WWTpump(bst.Unit):
         # assume 50% of the product weight is SS
         M_SS_pump = N_pump * (725*0.5)
 
-        return M_SS_pipe, M_SS_pump, 0
+        return M_SS_pipe, M_SS_pump
 
 
     ### Permeate ###
@@ -166,13 +171,13 @@ class WWTpump(bst.Unit):
 
         H_ts_PERM = D_tank if include_aerobic_filter else 0
 
-        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
             Q_mgd=Q_mgd,
             N_pump=cas_per_tank,
             L_s=20, # based on a 30-module unit with a total length of 6 m, [ft]
-            L_d_R=10*cas_per_tank, # based on a 30-module unit with a total width of 1.6 m and extra space, [ft]
+            L_d=10*cas_per_tank, # based on a 30-module unit with a total width of 1.6 m and extra space, [ft]
             H_ts=H_ts_PERM, #  H_ds_PERM (D_tank) - H_ss_PERM (0 or D_tank)
-            H_p_R=TMP*2.31 # TMP in water head, [ft], comment below on 2.31
+            H_p=TMP*2.31 # TMP in water head, [ft], comment below on 2.31
             )
 
         # # factor = 2.31 calculated by
@@ -203,7 +208,7 @@ class WWTpump(bst.Unit):
         Q_mgd = Q_mgd or self.Q_mgd
         cas_per_tank = cas_per_tank or self.add_inputs[0]
 
-        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
             Q_mgd=Q_mgd,
             N_pump=cas_per_tank,
             L_s=100, # pipe length per module
@@ -234,7 +239,7 @@ class WWTpump(bst.Unit):
         Q_mgd = Q_mgd or self.Q_mgd
         L_CSTR = L_CSTR or self.add_inputs[0]
 
-        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
             Q_mgd=Q_mgd,
             N_pump=1,
             L_s=0., # ignore suction side
@@ -264,18 +269,25 @@ class WWTpump(bst.Unit):
         D : float
             Depth of the filter tank, [ft].
         '''
-        M_SS_IR_pipe, M_SS_IR_pump = self.design_generic(
-            Q_mgd=self.Q_mgd,
+        add_inputs = self.add_inputs
+        Q_mgd = Q_mgd or self.Q_mgd
+        N_filter = N_filter or add_inputs[0]
+        D = D or add_inputs[1]
+
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+            Q_mgd=Q_mgd,
             N_pump=N_filter,
             L_s=150, # length of suction pipe per filter, [ft]
-            L_d_R=30, # pipe length per filter
+            L_d=30, # pipe length per filter
             H_ts=D, # H_ds_LIFT (D) - H_ss_LIFT (0)
-            H_p_R=0. # no pressure
+            H_p=0. # no pressure
             )
+
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
     ### Chemical ###
-    def design_cheimcal(self, Q_mgd=None):
+    def design_chemical(self, Q_mgd=None):
         '''
         Design pump for membrane cleaning chemicals (NaOCl and citric acid),
         storage containers are included, and are assumed to be cubic in shape
@@ -308,7 +320,7 @@ class WWTpump(bst.Unit):
         H_ds_CHEM = 9 + 7/12 - 18/12
         H_ts_CHEM = H_ds_CHEM - H_ss_CHEM
 
-        M_SS_CHEM_pipe, M_SS_CHEM_pump = WWTpump.design_generic(
+        M_SS_CHEM_pipe, M_SS_CHEM_pump = self._design_generic(
             Q_mgd=Q_CHEM_mgd,
             N_pump=1,
             L_s=0., # no suction pipe
@@ -320,7 +332,6 @@ class WWTpump(bst.Unit):
         return M_SS_CHEM_pipe, M_SS_CHEM_pump, V_HDPE
 
 
-
     @property
     def pump_type(self):
         '''
@@ -330,10 +341,13 @@ class WWTpump(bst.Unit):
         return self._pump_type
     @pump_type.setter
     def pump_type(self, i):
-        if i.lower() not in self.valid_pump_types:
+        i_lower = i.lower()
+        i_lower = i_lower.replace('cstr', 'CSTR')
+        i_lower = i_lower.replace('af', 'AF')
+        if i_lower not in self.valid_pump_types:
             raise ValueError(f'The given `pump_type` "{i}" is not valid, '
                              'check `valid_pump_types` for acceptable pump types.')
-        self._pump_type = i.lower()
+        self._pump_type = i_lower
 
     @property
     def valid_pump_types(self):
@@ -354,6 +368,16 @@ class WWTpump(bst.Unit):
     def H_df(self):
         '''[float] Discharge friction head, [ft].'''
         return self._H_df
+
+    @property
+    def H_ts(self):
+        '''[float] Total static head, [ft].'''
+        return self._H_ts
+
+    @property
+    def H_p(self):
+        '''[float] Pressure head, [ft].'''
+        return self._H_p
 
     @property
     def TDH(self):
@@ -398,9 +422,9 @@ class WWTpump(bst.Unit):
     @property
     def brake_efficiency(self):
         '''[float] Brake efficiency.'''
-        return brake_efficiency(self.Q_gpm)
+        return brake_eff(self.Q_gpm)
 
     @property
     def motor_efficiency(self):
         '''[float] Motor efficiency.'''
-        return motor_efficiency(self.Q_gpm, self.BHP)
+        return motor_eff(self.BHP)

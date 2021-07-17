@@ -183,7 +183,7 @@ def get_digestion_rxns(stream, BD, X_biogas, X_growth, biomass_ID):
             continue # assume no entry means not biodegradable
 
         biogas_stoyk = get_BMP_stoichiometry(i)
-        if biogas_stoyk[i.ID] == 0: # no conversion of this chemical
+        if not biogas_stoyk.get(i.ID): # no conversion of this chemical
             continue
 
         iX_biogas = X * X_biogas # the amount of chemical used for biogas production

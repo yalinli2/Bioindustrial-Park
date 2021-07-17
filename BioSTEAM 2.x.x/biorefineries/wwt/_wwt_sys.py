@@ -50,6 +50,7 @@ from utils import (
     )
 from _settings import new_price
 from _internal_circulation_rx import InternalCirculationRx
+from _filter_tank import FilterTank
 from _membrane_bioreactor import AnMBR
 
 _mgd_to_cmh = auom('gallon').conversion_factor('m3')*1e6/24
@@ -278,16 +279,14 @@ class ReverseOsmosis(Unit):
         water.T = brine.T = influent.T
 
 
-def create_wastewater_treatment_units(ins, outs, IC_method,
-                                      # dry_flow_tpd, need_ammonia
-                                      ):
+def create_wastewater_treatment_units(ins, outs, IC_method):
     # wwt_streams, naocl_R602, citric_R602, bisulfite_R602, air_R602 = \
     #     ins[:-4], ins[-4], ins[-3], ins[-2], ins[-1]
     wwt_streams = ins
 
-    biogas, vent_R602, S604_CHP, recycled_water, brine = outs
+    biogas, vent_R602, vent_R603, S604_CHP, recycled_water, brine = outs
     # air_R602.phase = \
-    vent_R602.phase = 'g'
+    vent_R602.phase = vent_R603.phase = 'g'
 
     # ammonia_R602 = Stream('ammonia_R602', units='kg/hr')
     # caustic_R602 = Stream('caustic_R602', units='kg/hr', price=new_price['Caustics'])
@@ -313,7 +312,11 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
                  add_GAC=False,
                  include_degassing_membrane=True)
 
-    M602 = bst.units.Mixer('M602', ins=(R601-0, R602-0), outs=biogas)
+    R603 = FilterTank('R603', ins=(R602-1, '', 'air_R602'),
+                      outs=('biogas_R603', 'R603_treated', 'R603_wasted', vent_R603),
+                      filter_type='aerobic')
+
+    bst.units.Mixer('M602', ins=(R601-0, R602-0, R603-0), outs=biogas)
 
     # R602 = AerobicDigestion('R602',
     #                         ins=(R601-1, '', caustic_R602,
@@ -329,11 +332,11 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
     #                           outs=('membrane_treated_water', 'membrane_sludge'))
 
     # Recycled sludge stream of memberane bioreactor, the majority of it (96%)
-    # goes back to R602
-    S602 = bst.units.Splitter('S602', ins=R602-2, outs=('to_R602', ''),
+    # goes back to the aerobic filter
+    S602 = bst.units.Splitter('S602', ins=R603-2, outs=('S602_recycled', 'S602_wasted'),
                               split=0.96)
 
-    S603 = BeltThickener('S603', ins=(R601-2, S602-1),
+    S603 = BeltThickener('S603', ins=(R601-2, R602-2, S602-1),
                          outs=('S603_centrate', 'S603_solids'))
 
     # Sludge centrifuge to separate water (centrate) from sludge
@@ -343,12 +346,10 @@ def create_wastewater_treatment_units(ins, outs, IC_method,
                             outs=('S604_centrate', S604_CHP))
 
     # Mix recycles to aerobic digestion
-    bst.units.Mixer('M603', ins=(S602-0, S603-0, S604-0), outs=1-R602)
+    bst.units.Mixer('M603', ins=(S602-0, S603-0, S604-0), outs=1-R603)
 
-    #!!! Need to add another aerobic filter between R602 and RO
-
-    # Reverse osmosis to treat membrane separated water
-    ReverseOsmosis('S605', ins=R602-1, outs=(recycled_water, brine))
+    # Reverse osmosis to treat aerobically polished water
+    ReverseOsmosis('S605', ins=R603-1, outs=(recycled_water, brine))
 
 
 create_wastewater_treatment_system = bst.SystemFactory(
@@ -356,6 +357,7 @@ create_wastewater_treatment_system = bst.SystemFactory(
     ID='wastewater_treatment_sys',
     outs=[dict(ID='biogas'),
           dict(ID='vent_R602'),
+          dict(ID='vent_R603'),
           dict(ID='S604_CHP'),
           dict(ID='recycled_water'),
           dict(ID='brine')],
