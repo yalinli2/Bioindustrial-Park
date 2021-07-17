@@ -11,14 +11,21 @@
 
 import math
 import biosteam as bst
+import thermosteam as tmo
 
+# from biorefineries.wwt import WWTpump
+# from biorefineries.wwt.utils import (
+#     auom,
+#     compute_stream_COD,
+#     get_digestion_rxns,
+#     get_split_dct
+#     )
 from _wwt_pump import WWTpump
 from utils import (
     auom,
     compute_stream_COD,
-    format_str,
-    get_BD_dct,
-    get_digestion_rxns
+    get_digestion_rxns,
+    get_split_dct
     )
 
 __all__ = ('FilterTank',)
@@ -56,6 +63,12 @@ class FilterTank(bst.Unit):
         or CO2 (`filter_type`=="aerobic").
     X_growth : float
         Fraction of the influent COD converted to biomass growth.
+    split : dict
+        Component-wise split to the treated water.
+        E.g., {'Water':1, 'WWTsludge':0} indicates all of the water goes to
+        the treated water and all of the WWTsludge goes to the wasted sludge.
+        Default splits (based on the membrane bioreactor in [2]_) will be used
+        if not provided.
     T : float
         Temperature of the filter tank.
 
@@ -85,15 +98,27 @@ class FilterTank(bst.Unit):
                  filter_type='aerobic',
                  OLR=1.67, # 2/24/(1-0.95) based on the 2 kg COD/m3/day of effluent in ref [1]
                  HLR=2, X_decomp=0.74, X_growth=0.22, # X_decomp & X_growth from ref[2]
-                 T=30+273.15):
+                 split=None, T=30+273.15):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.filter_type = filter_type
         self.OLR = OLR
         self.HLR = HLR
         self.X_decomp = X_decomp
         self.X_growth = X_growth
+        self.split = split if split else get_split_dct(self.chemicals)
         self.T = T
         self._refresh_rxns()
+
+
+    def _refresh_rxns(self, X_decomp=None, X_growth=None):
+        X_decomp = X_decomp if X_decomp else self.X_decomp
+        X_growth = X_growth if X_growth else self.X_growth
+
+        self._decomp_rxns = get_digestion_rxns(self.ins[0], 1.,
+                                               X_decomp, 0., 'WWTsludge')
+        self._growth_rxns = get_digestion_rxns(self.ins[0], 1.,
+                                               0., X_growth, 'WWTsludge')
+        self._i_rm = self._decomp_rxns.X_net.data + self._growth_rxns.X_net.data
 
 
     def _run(self):
@@ -106,6 +131,7 @@ class FilterTank(bst.Unit):
 
         self.growth_rxns(inf.mol)
         self.decomp_rxns.force_reaction(inf.mol)
+        tmo.separations.split(inf, eff, waste, self._isplit.data)
 
         biogas.phase = air_in.phase = air_out.phase = 'g'
 
@@ -113,26 +139,20 @@ class FilterTank(bst.Unit):
             air_in.imol['O2'] = - inf.imol['O2']
             air_in.imol['N2'] = - 0.79/0.21 * inf.imol['O2']
             inf.imol['O2'] = 0
+        else:
+            air_in.empty()
 
         if self.filter_type == 'anaerobic':
-            biogas.empty()
-            air_out.receive_vent(inf)
-        else:
-            biogas.receive_vent(inf)
+            biogas.receive_vent(eff)
+            biogas.receive_vent(waste)
             air_in.empty()
             air_out.empty()
+        else:
+            biogas.empty()
+            air_out.receive_vent(eff)
+            air_out.receive_vent(waste)
+            air_out.imol['N2'] += air_in.imol['N2']
             self._recir_ratio = None
-
-
-    def _refresh_rxns(self, X_decomp=None, X_growth=None):
-        X_decomp = X_decomp if X_decomp else self.X_decomp
-        X_growth = X_growth if X_growth else self.X_growth
-
-        self._decomp_rxns = get_digestion_rxns(self.ins[0], 1.,
-                                               X_decomp, 0., 'WWTsludge')
-        self._growth_rxns = get_digestion_rxns(self.ins[0], 1.,
-                                               0., X_growth, 'WWTsludge')
-        self._i_rm = self._decomp_rxns.X_net.data + self._growth_rxns.X_net.data
 
 
     def _design(self):
@@ -265,8 +285,8 @@ class FilterTank(bst.Unit):
     #     return N_AF, d_AF, D_AF, V_m_AF, VWC_AF, VWC_AF, VEX_PB
 
     def _cost(self):
-        D, C, BM, lifetime = self.design_results, self.purchase_costs, \
-            self._F_BM_default, self._default_equipment_lifetime
+        D, C, F_BM, lifetime = self.design_results, self.baseline_purchase_costs, \
+            self.F_BM, self._default_equipment_lifetime
 
         ### Capital ###
         # Concrete and excavaction
@@ -290,13 +310,13 @@ class FilterTank(bst.Unit):
         C['Pump building'] = building
         C['Pump excavation'] = VEX / 27 * 0.3
 
-        BM['Pumps'] = BM['Pump building'] = BM['Pump excavation'] = \
+        F_BM['Pumps'] = F_BM['Pump building'] = F_BM['Pump excavation'] = \
             1.18 * (1+0.007) # 0.007 is for  miscellaneous costs
         lifetime['Pumps'] = 15
 
         # Set bare module factor to 1 if not otherwise provided
         for k in C.keys():
-            BM[k] = 1 if not BM.get(k) else BM.get(k)
+            F_BM[k] = 1 if not F_BM.get(k) else F_BM.get(k)
 
         self.power_utility.rate = self.Pump.power_utility.rate
 
@@ -335,6 +355,7 @@ class FilterTank(bst.Unit):
     @staticmethod
     def compute_COD(stream):
         return compute_stream_COD(stream)
+
 
     # TODO: now need to add pumps externally,
     # consider using algorithms in ref [2] to add influent, recirculation,
@@ -419,7 +440,7 @@ class FilterTank(bst.Unit):
         '''
         [float] Influent volumetric flow rate in million gallon per day, [mgd].
         '''
-        return self._inf.F_vol*_m3_to_gal*24/1e6
+        return self.ins[0].F_vol*_m3_to_gal*24/1e6
 
     # @property
     # def Q_gpm(self):
@@ -449,6 +470,15 @@ class FilterTank(bst.Unit):
     def i_rm(self):
         '''[:class:`np.array`] Removal of each chemical in this filter tank.'''
         return self._i_rm
+
+    @property
+    def split(self):
+        '''Component-wise split to the treated water.'''
+        return self._split
+    @split.setter
+    def split(self, i):
+        self._split = i
+        self._isplit = self.chemicals.isplit(i, order=None)
 
     @property
     def X_decomp(self):

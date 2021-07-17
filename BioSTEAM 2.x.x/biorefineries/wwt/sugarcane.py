@@ -17,7 +17,12 @@ import biosteam  as bst
 from biosteam import main_flowsheet as F
 from biorefineries import sugarcane as sc
 
-#!!! Need to enable relative importing
+# from biorefineries.wwt import (
+#     create_sc_chemicals,
+#     new_price, load_cs_settings,
+#     create_wastewater_treatment_system
+#     )
+# from biorefineries.utils import get_MESP
 from _chemicals import create_sc_chemicals
 from _settings import new_price, load_sc_settings
 from _wwt_sys import create_wastewater_treatment_system

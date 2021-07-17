@@ -24,7 +24,8 @@ __all__ = (
     'auom',
     'ethanol_density_kggal',
     'format_str',
-    'get_MB_split_dct',
+    'remove_undefined_chemicals',
+    'get_split_dct',
     'get_MESP',
     'kph_to_tpd',
     )
@@ -36,8 +37,7 @@ def format_str(string):
     return string
 
 
-# Split for the membrane bioreactor
-def get_MB_split_dct(chemicals, **split):
+def get_split_dct(chemicals, **split):
     # Copied from the cornstover biorefinery,
     # which is based on the 2011 NREL report (Humbird et al.),
     # assume no insolubles go to permeate
@@ -77,11 +77,12 @@ def get_MB_split_dct(chemicals, **split):
         Cellulase=0.145
         )
     split_dct.update(insolubles_dct)
-    remove_undefined_chemicals(split, chemicals)
-    default_chemical_dict(split, chemicals, 0.15, 0.125, 0)
+    default_chemical_dict(split_dct, chemicals, 0.15, 0.125, 0) # 'g', 'l', 's'
 
     if split is not None:
         split_dct.update(split)
+
+    remove_undefined_chemicals(split_dct, chemicals)
 
     return split_dct
 

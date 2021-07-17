@@ -46,11 +46,12 @@ IC_purchase_cost_algorithms['IC'] = ic
 # Based on ANSI (American National Standards Institute) pipe chart
 # the original code has a bug (no data for 22) and has been fixed here
 boundaries = np.concatenate([
-    np.arange(1/8, 1.5, 1/8),
-    np.arange(1.5, 5, 0.5),
-    np.arange(5, 12, 1),
-    np.arange(12, 36, 2),
-    np.arange(36, 54, 6)
+    np.arange(1/8, 0.5, 1/8),
+    np.arange(0.5, 1.5, 1/4),
+    np.arange(1.5, 5,   0.5),
+    np.arange(5,   12,  1),
+    np.arange(12,  36,  2),
+    np.arange(36,  54,  6)
     ])
 
 size = boundaries.shape[0]

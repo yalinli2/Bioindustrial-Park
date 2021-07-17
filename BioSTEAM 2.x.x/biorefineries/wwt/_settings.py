@@ -61,6 +61,7 @@ from biorefineries.lipidcane._process_settings import (
     load_process_settings as load_lc_settings
     )
 
+# from biorefineries.utils import auom
 from utils import auom
 _lb_per_kg = auom('lb').conversion_factor('kg')
 _GDP_2007to2016 = 1.160

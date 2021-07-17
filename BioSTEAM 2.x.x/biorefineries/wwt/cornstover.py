@@ -20,7 +20,12 @@ from biorefineries import (
     sugarcane as sc
     )
 
-#!!! Need to enable relative importing
+# from biorefineries.wwt import (
+#     create_cs_chemicals,
+#     cs_price, load_cs_settings,
+#     create_wastewater_treatment_system
+#     )
+# from biorefineries.utils import get_MESP
 from _chemicals import create_cs_chemicals
 from _settings import cs_price, load_cs_settings
 from _wwt_sys import create_wastewater_treatment_system
@@ -44,13 +49,11 @@ bst.settings.set_thermo(chems)
           dict(ID='denaturant',
                Octane=1,
                price=cs_price['Denaturant'])],
-    outs=[dict(ID='ethanol', price=cs_price['Ethanol']),
-          dict(ID='vent_R602'),
-          dict(ID='brine')],
+    outs=[dict(ID='ethanol', price=cs_price['Ethanol'])],
 )
 def create_cs_system(ins, outs, include_blowdown_recycle=False):
     feedstock, denaturant = ins
-    ethanol, vent_R602, brine = outs
+    ethanol, = outs
     f = bst.main_flowsheet
     s = f.stream
     u = f.unit
@@ -101,11 +104,9 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
 
     create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
-        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
+        outs=['biogas', 'S604_CHP', 'recycled_water', 'brine'],
         mockup=True,
         IC_method='lumped',
-        # dry_flow_tpd=kph_to_tpd(s.cornstover),
-        # need_ammonia=False
     )
 
     M501 = bst.Mixer('M501', (u.S604-1, S401-0))
@@ -113,8 +114,7 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
     cs.create_facilities(
         solids_to_boiler=M501-0,
         gas_to_boiler=s.biogas,
-        process_water_streams=(#s.caustic_R602,
-                               s.stripping_water,
+        process_water_streams=(s.stripping_water,
                                s.warm_process_water_1,
                                s.warm_process_water_2,
                                s.pretreatment_steam,

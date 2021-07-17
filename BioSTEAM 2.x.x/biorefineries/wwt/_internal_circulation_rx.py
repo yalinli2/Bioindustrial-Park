@@ -24,7 +24,13 @@ import sympy as sp
 import biosteam as bst
 import thermosteam as tmo
 from biosteam.exceptions import DesignError
-#!!! Need to enable relative importing
+
+# from biorefineries.wwt.utils import (
+#     get_BD_dct,
+#     compute_stream_COD,
+#     get_digestion_rxns,
+#     IC_purchase_cost_algorithms
+#     )
 from utils import (
     get_BD_dct,
     compute_stream_COD,

@@ -16,7 +16,7 @@ from biosteam.units.design_tools.mechanical import (
     motor_efficiency as motor_eff
     )
 
-#!!! Need to enable relative importing
+# from biorefineries.wwt.utils import auom, select_pipe, format_str
 from utils import auom, select_pipe, format_str
 
 __all__ = ('WWTpump',)
