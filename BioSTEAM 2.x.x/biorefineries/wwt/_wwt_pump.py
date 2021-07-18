@@ -38,8 +38,11 @@ class WWTpump(bst.Unit):
         The following combination is valid:
             - "permeate_cross-flow"
             - "retentate_CSTR"
+            - "retentate_AF"
             - "recirculation_CSTR"
+            - "recirculation_AF"
             - "lift"
+            - "sludge"
             - "chemical"
     Q_mgd : float
         Volumetric flow rate in million gallon per day, [mgd].
@@ -62,13 +65,15 @@ class WWTpump(bst.Unit):
     C = 110 # Hazen- Williams coefficient for stainless steel (SS)
 
     _default_equipment_lifetime = {'Pump': 15}
-    # _F_BM_default = bst.Pump._F_BM_default
 
     _valid_pump_types = (
         'permeate_cross-flow',
         'retentate_CSTR',
+        'retentate_AF',
         'recirculation_CSTR',
+        'recirculation_AF',
         'lift',
+        'sludge',
         'chemical'
         )
 
@@ -100,6 +105,21 @@ class WWTpump(bst.Unit):
 
     def _cost(self):
         self.power_utility.rate = self.BHP/self.motor_efficiency * _hp_to_kW
+
+
+    # Used by other classes
+    @staticmethod
+    def _batch_adding_pump(obj, IDs, ins_dct, type_dct, inputs_dct):
+        for i in IDs:
+            if not hasattr(obj, f'{i}_pump'):
+                # if i == None:
+                #     continue
+                pump = WWTpump(
+                    ID=f'{obj.ID}_{i}',
+                    ins=ins_dct[i],
+                    pump_type=type_dct[i],
+                    add_inputs=inputs_dct[i])
+                setattr(obj, f'{i}_pump', pump)
 
 
     # Generic algorithms that will be called by all design functions
@@ -139,7 +159,6 @@ class WWTpump(bst.Unit):
         return M_SS_pipe, M_SS_pump
 
 
-    ### Permeate ###
     def design_permeate_cross_flow(self, Q_mgd=None, cas_per_tank=None, D_tank=None,
                                    TMP=None, include_aerobic_filter=False):
         '''
@@ -189,7 +208,6 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
-    ### Retentate ###
     def design_retentate_CSTR(self, Q_mgd=None, cas_per_tank=None):
         '''
         Design pump for the retent stream of CSTR reactors.
@@ -212,7 +230,7 @@ class WWTpump(bst.Unit):
             Q_mgd=Q_mgd,
             N_pump=cas_per_tank,
             L_s=100, # pipe length per module
-            L_d=30, # pipe length per filter (same as the discharge side of lift pump)
+            L_d=30, # pipe length per module (same as the discharge side of lift pump)
             H_ts=0., # H_ds_IR (D_tank) - H_ss_IR (D_tank)
             H_p=0. # no pressure
             )
@@ -220,7 +238,40 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
-    ### Recirculation ###
+    def design_retentate_AF(self, Q_mgd=None, N_filter=None, D=None):
+        '''
+        Design pump for the retentate stream of AF reactors.
+
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        N_filter : float
+            Number of filter tanks.
+        D : float
+            Depth of the filter tank, [ft].
+        '''
+        add_inputs = self.add_inputs
+        Q_mgd = Q_mgd or self.Q_mgd
+        N_filter = N_filter or add_inputs[0]
+        D = D or add_inputs[1]
+
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+            Q_mgd=Q_mgd,
+            N_pump=N_filter,
+            L_s=100, # assumed pipe length per filter, [ft]
+            L_d=30, # same as discharge side of lift pumping, [ft]
+            H_ts=0., # H_ds_IR (D) - H_ss_IR (D)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
+
+
     def design_recirculation_CSTR(self, Q_mgd=None, L_CSTR=None):
         '''
         Design pump for the recirculation stream of CSTR reactors.
@@ -251,7 +302,44 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
-    ### Lift ###
+    def design_recirculation_AF(self, Q_mgd=None, N_filter=None, d=None,
+                                D=None):
+        '''
+        Design pump for the recirculation stream of AF reactors.
+
+        Parameters defined through the `add_inputs` argument upon initiation of
+        this unit (Q_mgd listed separatedly) will be used if not provided
+        when calling this function.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        N_filter : float
+            Number of filter tanks.
+        d : float
+            diameter of the filter tank, [ft].
+        D : float
+            Depth of the filter tank, [ft].
+        '''
+        add_inputs = self.add_inputs
+        Q_mgd = Q_mgd or self.Q_mgd
+        N_filter = N_filter or add_inputs[0]
+        d = d or add_inputs[1]
+        D = D or add_inputs[2]
+
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+            Q_mgd=Q_mgd,
+            N_pump=N_filter,
+            L_s=d+D, # pipe length per filter, [ft]
+            L_d=30, # same as discharge side of lift pumping, [ft]
+            H_ts=0., # H_ds_IR (D) - H_ss_IR (D)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
+
+
     def design_lift(self, Q_mgd=None, N_filter=None, D=None):
         '''
         Design pump for the filter tank to lift streams.
@@ -278,7 +366,7 @@ class WWTpump(bst.Unit):
             Q_mgd=Q_mgd,
             N_pump=N_filter,
             L_s=150, # length of suction pipe per filter, [ft]
-            L_d=30, # pipe length per filter
+            L_d=30, # pipe length per filter, [ft]
             H_ts=D, # H_ds_LIFT (D) - H_ss_LIFT (0)
             H_p=0. # no pressure
             )
@@ -286,7 +374,29 @@ class WWTpump(bst.Unit):
         return M_SS_IR_pipe, M_SS_IR_pump, 0
 
 
-    ### Chemical ###
+    def design_sludge(self, Q_mgd=None):
+        '''
+        Design pump for handling waste sludge.
+
+        Parameters
+        ----------
+        Q_mgd : float
+            Volumetric flow rate in million gallon per day, [mgd].
+        '''
+        Q_mgd = Q_mgd or self.Q_mgd
+
+        M_SS_IR_pipe, M_SS_IR_pump = self._design_generic(
+            Q_mgd=Q_mgd,
+            N_pump=1,
+            L_s=50, # length of suction pipe, [ft]
+            L_d=50, # length of discharge pipe, [ft]
+            H_ts=0., # H_ds_LIFT (D) - H_ss_LIFT (0)
+            H_p=0. # no pressure
+            )
+
+        return M_SS_IR_pipe, M_SS_IR_pump, 0
+
+
     def design_chemical(self, Q_mgd=None):
         '''
         Design pump for membrane cleaning chemicals (NaOCl and citric acid),

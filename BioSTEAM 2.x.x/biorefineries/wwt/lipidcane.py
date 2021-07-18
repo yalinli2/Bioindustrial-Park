@@ -28,7 +28,7 @@ from biorefineries import (
 from _chemicals import create_lc_chemicals
 from _settings import lc_price, new_price, load_lc_settings
 from _wwt_sys import create_wastewater_treatment_system
-from utils import kph_to_tpd, get_MESP
+from utils import get_MESP
 
 
 # %%
@@ -48,8 +48,6 @@ bst.settings.set_thermo(chems)
     outs=[dict(ID='ethanol', price=lc_price['Ethanol']),
           dict(ID='biodiesel', price=lc_price['Biodiesel']),
           dict(ID='crude_glycerol', price=lc_price['Crude glycerol']),
-          dict(ID='vent_R602'),
-          dict(ID='brine'),
           dict(ID='emissions'),
           dict(ID='ash_disposal')]
 )
@@ -58,7 +56,7 @@ def create_lc_system(ins, outs):
     u = F.unit
 
     lipidcane, enzyme, H3PO4, lime, polymer, denaturant = ins
-    ethanol, biodiesel, crude_glycerol, vent_R602, brine, emissions, ash_disposal = outs
+    ethanol, biodiesel, crude_glycerol, emissions, ash_disposal = outs
 
     feedstock_handling_sys = lc.create_feedstock_handling_system(
         ins=lipidcane,
@@ -98,16 +96,14 @@ def create_lc_system(ins, outs):
 
     create_wastewater_treatment_system(
         ins=[ethanol_production_sys-1, M305-0],
-        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
+        outs=['biogas', 'S603_CHP', 'recycled_water', 'brine'],
         mockup=True,
         IC_method='lumped',
-        dry_flow_tpd=kph_to_tpd(s.lipidcane),
-        need_ammonia=False
     )
 
     ### Facilities ###
     bst.units.BoilerTurbogenerator('BT',
-                                   (juicing_and_lipid_extraction_sys-2, u.R601-0,
+                                   (juicing_and_lipid_extraction_sys-2, u.M602-0,
                                     'boiler_makeup_water', 'natural_gas', '', ''),
                                    (emissions, 'rejected_water_and_blowdown', ash_disposal),
                                    boiler_efficiency=0.80,
@@ -125,7 +121,7 @@ def create_lc_system(ins, outs):
                              *makeup_water_streams)
     makeup_water = bst.Stream('makeup_water', price=0.000254)
     bst.units.ProcessWaterCenter('PWC',
-                                 (u.S605-0, # recycled wastewater from reverse osmosis
+                                 (u.S604-0, # recycled wastewater from reverse osmosis
                                  makeup_water),
                                  (),
                                  None,
@@ -177,6 +173,32 @@ MESP_old = get_MESP(lc.ethanol, lc.lipidcane_tea, 'old lc sys w/o ww cost')
 lc.wastewater.price = new_price['Wastewater']
 MESP_old = get_MESP(lc.ethanol, lc.lipidcane_tea, 'old lc sys w ww cost')
 MESP_new = get_MESP(ethanol, lipidcane_tea, 'new lc sys')
+
+
+# %%
+
+# =============================================================================
+# Sum up results
+# =============================================================================
+
+wwt_units = [i for i in u if i.ID[1:3]=='60']
+new_capexes = {i.ID: i.installed_cost/1e6 for i in wwt_units}
+new_capex = sum(i for i in new_capexes.values())
+
+new_powers_wwt = {i.ID: i.power_utility.rate/1e3 for i in wwt_units}
+new_power_wwt = sum(i for i in new_powers_wwt.values())
+new_power_tot = sum(i.power_utility.consumption for i in lipidcane_sys.units)/1e3
+new_power_ratio = new_power_wwt / new_power_tot
+
+new_power_net = sum(i.power_utility.rate for i in lipidcane_sys.units)/1e3
+
+s = F.stream
+# Hf in kJ/hr
+net_e = (s.biodiesel.Hf+s.ethanol.Hf)/3600/1e3 + u.BT.power_utility.rate/1e3
+net_e_ratio = net_e/(s.lipidcane.Hf/3600/1e3)
+
+# # A lot (twice as ethanol) goes to filter_cake
+# s.filter_cake.Hf/3600/1e3
 
 # Ratios for IC design
 # from _utils import get_CN_ratio

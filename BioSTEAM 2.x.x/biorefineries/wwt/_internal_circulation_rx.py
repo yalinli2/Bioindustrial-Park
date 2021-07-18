@@ -13,7 +13,6 @@
 '''
 TODO:
     - Set a maximum on Xw (or Xe?), then increase the Qw if Xw is too high
-    - Add a biogas blower, emergency flare, pumps, etc. (look at the Humbird report)
     - C/N ratio, George's analysis shows it's very high
         - About 16, looks good
     - Consider sulfate and sulfide
@@ -96,6 +95,7 @@ class InternalCirculationRx(bst.MixTank):
         caused by the rising force of the generated biogas.
     T : float
         Temperature of the reactor.
+        Will not control temperature if provided as None.
     kwargs : dict
         Other keyword arguments (e.g., Fxb, Fxt).
 
@@ -130,8 +130,8 @@ class InternalCirculationRx(bst.MixTank):
     _default_vessel_material = 'Stainless steel'
     purchase_cost_algorithms = IC_purchase_cost_algorithms
 
-    # Heating utilities
-    auxiliary_unit_names = ('heat_exchanger',)
+    # Other equipment
+    auxiliary_unit_names = ('heat_exchanger', 'effluent_pump', 'sludge_pump')
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
@@ -153,12 +153,11 @@ class InternalCirculationRx(bst.MixTank):
         # Initiate the attributes
         self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
         self.heat_utilities = hx.heat_utilities
-
-        # Reactions
         self._refresh_rxns()
-
         # Conversion will be adjusted in the _run function
         self._decay_rxn = self.chemicals.WWTsludge.get_combustion_reaction(conversion=0.)
+        self.effluent_pump = bst.Pump(f'{self.ID}_eff')
+        self.sludge_pump = bst.Pump(f'{self.ID}_sludge')
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -185,7 +184,6 @@ class InternalCirculationRx(bst.MixTank):
         biogas, eff, waste  = self.outs
 
         # Initiate the streams
-        biogas.T = eff.T = waste.T = self.T
         biogas.phase = 'g'
         biogas.empty()
 
@@ -196,7 +194,7 @@ class InternalCirculationRx(bst.MixTank):
         growth_rxns(inf.mol)
         biogas_rxns(inf.mol)
 
-        gas = tmo.Stream(phase='g', T = self.T)
+        gas = tmo.Stream(phase='g')
         gas.receive_vent(inf)
         Se = compute_stream_COD(inf)
 
@@ -228,6 +226,9 @@ class InternalCirculationRx(bst.MixTank):
             for i in (eff, waste):
                 decay_rxn.force_reaction(i.mol)
                 i.imol['O2'] = max(0, i.imol['O2'])
+
+        if self.T:
+            biogas.T = eff.T = waste.T = self.T
 
 
     def _run_separate(self, run_inputs):
@@ -304,12 +305,24 @@ class InternalCirculationRx(bst.MixTank):
             D['Bottom reactor volume'] = self.Vb
             D['Top reactor volume'] = self.Vt
 
+
     def _cost(self):
         bst.MixTank._cost(self)
 
-        inf = self.ins[0]
-        H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=self.T, P=101325)
-        duty = -(inf.H - H_at_T)
+        pumps = (self.effluent_pump, self.sludge_pump)
+        for i in range(2):
+            pumps[i].ins[0] = self.outs[i+1].copy() # use `.proxy()` will interfere `_run`
+            pumps[i].simulate()
+            self.power_utility.rate += pumps[i].power_utility.rate
+        self.power_utility.rate += \
+            self.effluent_pump.power_utility.rate + self.sludge_pump.power_utility.rate
+
+        inf, T = self.ins[0], self.T
+        if T:
+            H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=T, P=101325)
+            duty = -(inf.H - H_at_T) if self.T else 0.
+        else:
+            duty = 0.
         self.heat_exchanger.simulate_as_auxiliary_exchanger(duty, inf)
 
 

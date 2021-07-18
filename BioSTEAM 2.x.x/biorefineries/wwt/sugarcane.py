@@ -26,7 +26,7 @@ from biorefineries import sugarcane as sc
 from _chemicals import create_sc_chemicals
 from _settings import new_price, load_sc_settings
 from _wwt_sys import create_wastewater_treatment_system
-from utils import kph_to_tpd, get_MESP
+from utils import get_MESP
 
 
 # %%
@@ -44,8 +44,6 @@ bst.settings.set_thermo(chems)
     ins=[*sc.create_juicing_system_with_fiber_screener.ins,
          sc.create_ethanol_purification_system.ins[1]], # denaturant
     outs=[sc.create_ethanol_purification_system.outs[0], # ethanol
-          dict(ID='vent_R602'),
-          dict(ID='brine'),
           dict(ID='emissions'),
           dict(ID='ash_disposal')]
 
@@ -55,7 +53,7 @@ def create_sc_system(ins, outs):
     u = F.unit
 
     sugarcane, enzyme, H3PO4, lime, polymer, denaturant = ins
-    ethanol, vent_R602, brine, emissions, ash_disposal = outs
+    ethanol, emissions, ash_disposal = outs
 
     feedstock_handling_sys = sc.create_feedstock_handling_system(
         ins=[sugarcane],
@@ -82,16 +80,14 @@ def create_sc_system(ins, outs):
     ### Wastewater treatment ###
     create_wastewater_treatment_system(
         ins=[ethanol_production_sys-1, M305-0],
-        outs=['biogas', vent_R602, 'S604_CHP', 'recycled_water', brine],
+        outs=['biogas', 'S603_CHP', 'recycled_water', 'brine'],
         mockup=True,
         IC_method='lumped',
-        dry_flow_tpd=kph_to_tpd(s.sugarcane),
-        need_ammonia=False
     )
 
     ### Facilities ###
     bst.units.BoilerTurbogenerator('BT',
-        (juicing_sys-1, u.R601-0, 'boiler_makeup_water', 'natural_gas', '', ''),
+        (juicing_sys-1, u.M602-0, 'boiler_makeup_water', 'natural_gas', '', ''),
         outs=(emissions, 'rejected_water_and_blowdown', ash_disposal),
         boiler_efficiency=0.80,
         turbogenerator_efficiency=0.85)
@@ -106,7 +102,7 @@ def create_sc_system(ins, outs):
                              *makeup_water_streams)
     makeup_water = bst.Stream('makeup_water', price=0.000254)
     bst.units.ProcessWaterCenter('PWC',
-                                 (u.S605-0, # recycled wastewater from reverse osmosis
+                                 (u.S604-0, # recycled wastewater from reverse osmosis
                                  makeup_water),
                                  (),
                                  None,
@@ -157,6 +153,32 @@ MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w/o ww cost')
 sc.wastewater.price = new_price['Wastewater']
 MESP_old = get_MESP(sc.ethanol, sc.sugarcane_tea, 'old sc sys w ww cost')
 MESP_new = get_MESP(ethanol, sugarcane_tea, 'new sc sys')
+
+
+# %%
+
+# =============================================================================
+# Sum up results
+# =============================================================================
+
+wwt_units = [i for i in u if i.ID[1:3]=='60']
+new_capexes = {i.ID: i.installed_cost/1e6 for i in wwt_units}
+new_capex = sum(i for i in new_capexes.values())
+
+new_powers_wwt = {i.ID: i.power_utility.rate/1e3 for i in wwt_units}
+new_power_wwt = sum(i for i in new_powers_wwt.values())/1e3
+new_power_tot = sum(i.power_utility.consumption for i in sugarcane_sys.units)
+new_power_ratio = new_power_wwt / new_power_tot
+
+new_power_net = sum(i.power_utility.rate for i in sugarcane_sys.units)/1e3
+
+s = F.stream
+# Hf in kJ/hr
+net_e = s.ethanol.Hf/3600/1e3 + u.BT.power_utility.rate/1e3
+net_e_ratio = net_e/(s.sugarcane.Hf/3600/1e3)
+
+# # A lot (similar to ethanol) goes to filter_cake
+# s.filter_cake.Hf/3600/1e3
 
 # Ratios for IC design
 # from _utils import get_CN_ratio

@@ -104,12 +104,12 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
 
     create_wastewater_treatment_system(
         ins=[S401-1, pretreatment_sys-1, blowdown_to_wastewater],
-        outs=['biogas', 'S604_CHP', 'recycled_water', 'brine'],
+        outs=['biogas', 'S603_CHP', 'recycled_water', 'brine'],
         mockup=True,
         IC_method='lumped',
     )
 
-    M501 = bst.Mixer('M501', (u.S604-1, S401-0))
+    M501 = bst.Mixer('M501', (u.S603-1, S401-0))
 
     cs.create_facilities(
         solids_to_boiler=M501-0,
@@ -120,7 +120,7 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
                                s.pretreatment_steam,
                                s.saccharification_water),
         feedstock=feedstock,
-        RO_water=u.S605-0,
+        RO_water=u.S604-0,
         recycle_process_water=stripper_bottoms_product,
         blowdown_to_wastewater=blowdown_to_wastewater,
     )
@@ -135,13 +135,10 @@ def create_cs_system(ins, outs, include_blowdown_recycle=False):
 flowsheet = bst.Flowsheet('wwt_cornstover')
 F.set_flowsheet(flowsheet)
 cornstover_sys = create_cs_system(include_blowdown_recycle=False)
+
 u = F.unit
-
-cornstover_sys.simulate()
-
-WWT_units = [i for i in u if i.ID[1:3]=='60']
-WWT_costs = sum(i.purchase_cost for i in WWT_units)
-OSBL_units = (*WWT_units, u.CWP, u.CT, u.PWC, u.ADP,
+wwt_units = [i for i in u if i.ID[1:3]=='60']
+OSBL_units = (*wwt_units, u.CWP, u.CT, u.PWC, u.ADP,
               u.T701, u.T702, u.P701, u.P702, u.M701, u.FT,
               u.CSL_storage, u.DAP_storage, u.BT)
 cornstover_tea = cs.create_tea(cornstover_sys, OSBL_units, [u.U101])
@@ -157,6 +154,39 @@ MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 # %%
 
 # =============================================================================
+# Util functions for result comparison
+# =============================================================================
+
+# Old system
+cs_wwt_units = [i for i in cs.cornstover_sys.units if i.ID[1:3]=='60']
+old_capex = cs.WWTC.installed_cost / 1e6
+
+old_power_wwt = cs.WWTC.power_utility.rate
+old_power_tot = sum(i.power_utility.consumption for i in cs.cornstover_sys.units)
+old_power_ratio = old_power_wwt / old_power_tot
+
+old_power_net = sum(i.power_utility.rate for i in cs.cornstover_sys.units)
+
+# New system
+new_capexes = {i.ID: i.installed_cost/1e6 for i in wwt_units}
+new_capex = sum(i for i in new_capexes.values())
+
+new_powers_wwt = {i.ID: i.power_utility.rate/1e3 for i in wwt_units}
+new_power_wwt = sum(i for i in new_powers_wwt.values())
+new_power_tot = sum(i.power_utility.consumption for i in cornstover_sys.units)/1e3
+new_power_ratio = new_power_wwt / new_power_tot
+
+new_power_net = sum(i.power_utility.rate for i in cornstover_sys.units)/1e3
+
+s = F.stream
+# Hf in kJ/hr
+net_e = s.ethanol.Hf/3600/1e3 + u.BT.power_utility.rate/1e3
+net_e_ratio = net_e/(s.cornstover.Hf/3600/1e3)
+
+
+# %%
+
+# =============================================================================
 # Backup codes for checks
 # =============================================================================
 
@@ -165,12 +195,12 @@ MESP_new = get_MESP(ethanol, cornstover_tea, 'new cs sys')
 # R601_CN = get_CN_ratio(u.R601._inf)
 
 # # Methane production
-# from _utils import get_digestable_chemicals
+# from utils import get_digestable_chemicals
 # BD_dct = {k.ID: 1. for k in get_digestable_chemicals(chems)}
 # u.R601.biodegradability = BD_dct
 # u.R601._refresh_rxns(X_biogas=0.86, X_growth=0.05)
-# get_MESP(ethanol, cornstover_tea, '')
 # # About 5481, vs. 5681 from Humbird, about 3-4% less,
 # # might be due to the different CH4/CO2 ratios in the biogas production reaction,
 # # Humbird assumed 51%:49% (1.04) CH4:CO2 on a molar basis, here is about 1
-# u.R601.imass['CH4']
+# print(u.R601.outs[0].imass['CH4'])
+# get_MESP(ethanol, cornstover_tea, '')

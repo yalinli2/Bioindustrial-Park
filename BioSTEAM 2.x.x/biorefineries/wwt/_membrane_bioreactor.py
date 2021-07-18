@@ -12,9 +12,8 @@
 
 '''
 TODO:
-    - Compute heat loss and add heat exchanger
-    - Add ANA/AER filters, consider making a new class then call that class here
     - Add algorithms for other configurations
+    (AF, submerged, sparging, GAC, flat sheet, hollow fiber)
     - Maybe add AeMBR as well (make an MBR superclass)
 
 References
@@ -28,7 +27,7 @@ https://doi.org/10.1039/C5EE03715H.
 import math
 import biosteam as bst
 import thermosteam as tmo
-from collections.abc import Iterable
+# from collections.abc import Iterable
 from biosteam.exceptions import DesignError
 
 # from biorefineries.wwt import (
@@ -96,10 +95,10 @@ class AnMBR(bst.Unit):
         or "ceramic" for "multi-tube".
     include_aerobic_filter : bool
         Whether to include an aerobic filtration process in this AnMBR,
-        can only be "True" in "AF" (not "CSTR") reactor.
+        can only be True in "AF" (not "CSTR") reactor.
     add_GAC : bool
         If to add granual activated carbon to enhance biomass retention,
-        can only be "True" for the "submerged" configuration.
+        can only be True for the "submerged" configuration.
     include_degassing_membrane : bool
         If to include a degassing membrane to enhance methane
         (generated through the digestion reaction) recovery.
@@ -117,6 +116,11 @@ class AnMBR(bst.Unit):
         if not provided.
     T : float
         Temperature of the reactor.
+        Will not control temperature if provided as None.
+    include_pump_building_cost : bool
+        Whether to include the construction cost of pump building.
+    include_excavation_cost : bool
+        Whether to include the construction cost of excavation.
     kwargs : dict
         Other keyword arguments (e.g., J_max, SGD).
 
@@ -171,20 +175,26 @@ class AnMBR(bst.Unit):
     _constr_access = 3
 
     # Operation-related parameters
-    _HRT = 10
-    _J_max = 8.5
+    _HRT = 12
+    _J_max = 12
     _TMP_dct = {
-        'cross-flow': 21,
-        'submerged': 25,
+        'cross-flow': 2.5,
+        'submerged': 2.5,
         }
     _TMP_aerobic = None
-    _recir_ratio = 4
-    _v_cross_flow = 3*_ft_to_m
+    _recir_ratio = 2.25
+    _v_cross_flow = 1.2
     _v_GAC = 8
-    _SGD = 1.7
+    _SGD = 0.625
     _AFF = 3.33
 
     _refresh_rxns = InternalCirculationRx._refresh_rxns
+
+    # Other equipment
+    auxiliary_unit_names = ('heat_exchanger',)
+    _pumps =  ('perm', 'retent', 'recir', 'sludge', 'naocl', 'citric', 'bisulfite',
+               'AF', 'AeF')
+
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  reactor_type='CSTR',
@@ -194,7 +204,10 @@ class AnMBR(bst.Unit):
                  include_aerobic_filter=False,
                  add_GAC=False,
                  include_degassing_membrane=True,
-                 biodegradability={}, Y=0.05, split=None, T=35+273.15,
+                 biodegradability={}, Y=0.05, split=None,
+                 T=35+273.15,
+                 include_pump_building_cost=False,
+                 include_excavation_cost=False,
                  **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.reactor_type = reactor_type
@@ -209,6 +222,12 @@ class AnMBR(bst.Unit):
         self.Y = Y
         self.split = split if split else get_split_dct(self.chemicals)
         self.T = T
+        self.include_pump_building_cost = include_pump_building_cost
+        self.include_excavation_cost = include_excavation_cost
+
+        # Initiate the attributes
+        self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
+        self.heat_utilities = hx.heat_utilities
         self._refresh_rxns()
 
         for k, v in kwargs.items():
@@ -237,7 +256,7 @@ class AnMBR(bst.Unit):
                                   'for "cross-flow" membrane, not {m_type}.')
             if self.add_GAC:
                 raise DesignError('No GAC should be added '
-                                  '(i.e., `add_GAC` can only be "False"'
+                                  '(i.e., `add_GAC` can only be False'
                                   'for "cross-flow" membrane.')
 
         plastics = ('PES', 'PVDF', 'PET', 'PTFE')
@@ -315,7 +334,8 @@ class AnMBR(bst.Unit):
         air_in.T = 17 + 273.15
         self._design_blower()
 
-        perm.T = sludge.T = biogas.T = air_out.T = self.T
+        if self.T is not None:
+            perm.T = sludge.T = biogas.T = air_out.T = self.T
 
 
     # Called by _run
@@ -362,7 +382,7 @@ class AnMBR(bst.Unit):
 
         if self.add_GAC:
             Q_upflow_req = (self.v_GAC/_ft_to_m) * \
-                self.L_membrane_tank*self.W_tank*self.N_train * 24 / _ft3_to_gal
+                self.L_membrane_tank*self.W_tank*self.N_train * 24 * _ft3_to_gal / 1e6
             Q_IR_add_mgd = max(0, (Q_mgd+Q_IR_mgd)-Q_upflow_req)
             Q_IR_mgd += Q_IR_add_mgd
             self._recir_ratio = Q_IR_mgd / Q_mgd
@@ -531,7 +551,7 @@ class AnMBR(bst.Unit):
     # Called by _design
     def _design_AF(self):
         '''NOT READY YET.'''
-        #!!! Use FilterTank
+        # Use FilterTank
 
 
     # Called by _design_CSTR/_design_AF
@@ -588,92 +608,57 @@ class AnMBR(bst.Unit):
     ### Step C function ###
     # Called by _design
     def _design_pump(self):
-        rx_type, m_config = self.reactor_type, self.membrane_configuration
-        pumps = [None, None, None, [], [None, None, None]] # multiples for AF-AeF/chemical
+        rx_type, m_config, pumps = \
+            self.reactor_type, self.membrane_configuration, self._pumps
 
-        # Permeate
-        if pumps[0] is None:
-            add_inputs = (self.cas_per_tank, self.D_tank, self.TMP_anaerobic,
-                          self.include_aerobic_filter)
-            pumps[0] = WWTpump(ID=f'{self.ID}_perm',
-                               ins=self.outs[1].proxy(), # permeate
-                               pump_type=f'permeate_{m_config}',
-                               add_inputs=add_inputs)
+        # IDs = ['perm', 'retent', 'recir', 'sludge', 'naocl', 'citric', 'bisulfite']
 
-        # Retentate
-        if pumps[1] is None:
-            add_inputs = (self.cas_per_tank,)
-            pumps[1] = WWTpump(ID=f'{self.ID}_retent',
-                               ins=self._retent,
-                               pump_type=f'retentate_{rx_type}',
-                               add_inputs=add_inputs)
+        ins_dct = {
+            'perm': self.outs[1].proxy(),
+            'retent': self._retent,
+            'recir': self._recir,
+            'sludge': self.outs[2].proxy(),
+            'naocl': self.ins[2].proxy(),
+            'citric': self.ins[3].proxy(),
+            'bisulfite': self.ins[4].proxy(),
+            }
 
-        # Recirculation
-        if pumps[2] is None:
-            add_inputs = (self.L_CSTR,)
-            pumps[2] = WWTpump(ID=f'{self.ID}_recir',
-                               ins=self._recir,
-                               pump_type=f'recirculation_{rx_type}',
-                               add_inputs=add_inputs)
+        type_dct = {
+            'perm': f'permeate_{m_config}',
+            'retent': f'retentate_{rx_type}',
+            'recir': f'recirculation_{rx_type}',
+            'sludge': 'sludge',
+            'naocl': 'chemical',
+            'citric': 'chemical',
+            'bisulfite': 'chemical',
+            }
 
-        # Lift, only relevant to AF reactors
-        if rx_type == 'AF':
-            if len(pumps[3]==0):
-                AF = self.AF
-                add_inputs = (AF.N_filter, AF.D)
-                pumps[3].append(
-                    WWTpump(ID=f'{self.ID}_lift_AF',
-                            ins=self.AF.ins[0].proxy(),
-                            pump_type='lift_AF',
-                            add_inputs=add_inputs))
-                if self.include_aerobic_filter:
-                    AeF = self.AeF
-                    add_inputs = (AeF.N_filter, AeF.D)
-                    pumps[3].append(
-                        WWTpump(ID=f'{self.ID}_lift_AeF',
-                                ins=AeF.ins[0].proxy(),
-                                pump_type='lift',
-                                add_inputs=add_inputs))
+        inputs_dct = {
+            'perm': (self.cas_per_tank, self.D_tank, self.TMP_anaerobic,
+                     self.include_aerobic_filter),
+            'retent': (self.cas_per_tank,),
+            'recir': (self.L_CSTR,),
+            'sludge': (),
+            'naocl': (),
+            'citric': (),
+            'bisulfite': (),
+            }
 
-        # Chemical (stroage included)
-        if pumps[4][0] is None:
-            pumps[4][0] = WWTpump(ID=f'{self.ID}_naocl',
-                               ins=self.ins[1].proxy(), # naocl
-                               pump_type='chemical',
-                               add_inputs={})
+        WWTpump._batch_adding_pump(self, pumps[:-2], ins_dct, type_dct, inputs_dct)
 
-            pumps[4][1] = WWTpump(ID=f'{self.ID}_citric',
-                               ins=self.ins[2].proxy(), # citric
-                               pump_type='chemical',
-                               add_inputs={})
-
-            pumps[4][2] = WWTpump(ID=f'{self.ID}_bisulfite',
-                               ins=self.ins[3].proxy(), # bisulfite
-                               pump_type='chemical',
-                               add_inputs={})
-
-        # Sum up results
-        self._pump_dct = {k:v for k, v in zip(
-            ('permeate', 'retentate', 'recirculation', 'lift', 'chemical'),
-            pumps)}
+        self.AF_pump = self.AF.lift_pump if self.AF else None
+        self.AeF_pump = self.AeF.lift_pump if self.AeF else None
 
         pipe_ss, pump_ss, hdpe = 0., 0., 0.
-        for p in pumps:
-            if p is None:
+        for i in pumps:
+            p = getattr(self, f'{i}_pump')
+            if p == None:
                 continue
-            if not isinstance(p, Iterable):
-                p.simulate()
-                pipe_ss += p.design_results['Pipe stainless steel [kg]']
-                pump_ss += p.design_results['Pump stainless steel [kg]']
-            else:
-                for ip in p:
-                    if ip is None:
-                        continue
-                    ip.simulate()
-                    pipe_ss += ip.design_results['Pipe stainless steel [kg]']
-                    pump_ss += ip.design_results['Pump stainless steel [kg]']
-                    if ip.design_results.get('Chemical storage HDPE [m3]'):
-                        hdpe += ip.design_results['Chemical storage HDPE [m3]']
+
+            p.simulate()
+            pipe_ss += p.design_results['Pipe stainless steel [kg]']
+            pump_ss += p.design_results['Pump stainless steel [kg]']
+            hdpe += p.design_results['Chemical storage HDPE [m3]']
 
         return pipe_ss, pump_ss, hdpe
 
@@ -689,7 +674,8 @@ class AnMBR(bst.Unit):
         # Concrete and excavaction
         VEX, VWC, VSC = \
             D['Excavation [ft3]'], D['Wall concrete [ft3]'], D['Slab concrete [ft3]']
-        C['Reactor excavation'] = VEX / 27 * 8 # 27 is to convert the VEX from ft3 to yard3
+        # 27 is to convert the VEX from ft3 to yard3
+        C['Reactor excavation'] = VEX/27*8 if self.include_excavation_cost else 0.
         C['Wall concrete'] = VWC / 27 * 650
         C['Slab concrete'] = VSC / 27 * 350
 
@@ -718,8 +704,8 @@ class AnMBR(bst.Unit):
         # TODO: considering adding the O&M and letting user choose if to include
         pumps, building = self._cost_pump()
         C['Pumps'] = pumps
-        C['Pump building'] = building
-        C['Pump excavation'] = VEX / 27 * 0.3
+        C['Pump building'] = building if self.include_pump_building_cost else 0.
+        C['Pump excavation'] = VEX/27*0.3 if self.include_excavation_cost else 0.
 
         F_BM['Pumps'] = F_BM['Pump building'] = F_BM['Pump excavation'] = \
             1.18 * (1+0.007) # 0.007 is for  miscellaneous costs
@@ -739,20 +725,45 @@ class AnMBR(bst.Unit):
         for k in C.keys():
             F_BM[k] = 1 if not F_BM.get(k) else F_BM.get(k)
 
-        ### Power ###
-        pump_power = 0.
-        for k, v in self.pump_dct.items():
-            if not v:
+        ### Heat and power ###
+        # Heat loss, assume air is 17°C, ground is 10°C
+        T = self.T
+        if T is None:
+            loss = 0.
+        else:
+            N_train, L_CSTR, W_tank, D_tank = \
+                self.N_train, self.L_CSTR, self.W_tank, self.D_tank
+            A_W = 2 * (L_CSTR+W_tank) * D_tank
+            A_F = L_CSTR * W_tank
+            A_W *= N_train * _ft2_to_m2
+            A_F *= N_train * _ft2_to_m2
+
+            loss = 0.7 * (T-(17+273.15)) * A_W / 1e3 # 0.7 W/m2/°C for wall
+            loss += 1.7 * (T-(10+273.15)) * A_F / 1e3 # 1.7 W/m2/°C for floor
+            loss += 0.95 * (T-(17+273.15)) * A_F / 1e3 # 0.95 W/m2/°C for floating cover
+
+        # Fluid heating
+        inf = self._inf
+        if T:
+            H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=T, P=101325)
+            duty = -(inf.H - H_at_T)
+        else:
+            duty = 0
+        self.heat_exchanger.simulate_as_auxiliary_exchanger(duty, inf)
+
+        # Pumping
+        pumping = 0.
+        for ID in self._pumps:
+            p = getattr(self, f'{ID}_pump')
+            if p is None:
                 continue
-            if isinstance(v, Iterable):
-                pump_power += sum(i.power_utility.rate for i in v)
-            else:
-                pump_power += v.power_utility.rate
+            pumping += p.power_utility.rate
 
-        # sparging_power = #!!! output from submerge design
-        degassing_power = 3 * self.N_degasser # assume each uses 3 kW
+        # Gas
+        sparging = 0. #!!! output from submerge design
+        degassing = 3 * self.N_degasser # assume each uses 3 kW
 
-        self.power_utility.rate = pump_power + degassing_power #!!! also sparging, etc.
+        self.power_utility.rate = sparging + degassing + pumping + loss
 
 
     # Called by _cost
@@ -1009,19 +1020,19 @@ class AnMBR(bst.Unit):
 
 
     ### Pump/blower ###
-    @property
-    def pump_dct(self):
-        '''
-        [dict] All pumps included in this unit, will be automatically updated
-        during simulation.
-        Keys are "permeate", "retentate", "recirculation", "lift",
-        and "chemical" (chemical storage included),
-        values are :class:`WWTpump` objects (or None if not applicable).
-        Note that the value for "chemical" is a tuple of two :class:`WWTpump`,
-        the first one is for NaOCl and the second one is for citric acid
-        (both used for membrane cleaning).
-        '''
-        return self._pump_dct
+    # @property
+    # def pump_dct(self):
+    #     '''
+    #     [dict] All pumps included in this unit, will be automatically updated
+    #     during simulation.
+    #     Keys are "permeate", "retentate", "recirculation", "lift",
+    #     and "chemical" (chemical storage included),
+    #     values are :class:`WWTpump` objects (or None if not applicable).
+    #     Note that the value for "chemical" is a tuple of two :class:`WWTpump`,
+    #     the first one is for NaOCl and the second one is for citric acid
+    #     (both used for membrane cleaning).
+    #     '''
+    #     return self._pump_dct
 
     @property
     def N_blower(self):
@@ -1039,9 +1050,9 @@ class AnMBR(bst.Unit):
     def N_degasser(self):
         '''
         [int] Number of degassing membrane needed for dissolved biogas removal
-        (not needed for some designs).
+        (optional).
         '''
-        if not self.include_degassing_membrane:
+        if self.include_degassing_membrane:
             return math.ceil(self.Q_cmd/24/30) # assume each can hand 30 m3/d of influent
         return 0
 
@@ -1176,7 +1187,7 @@ class AnMBR(bst.Unit):
         '''
         [float] Internal recirculation ratio, will be updated in simulation
         if the originally set ratio is not adequate for the desired flow
-        considering retentate and GAC (if applicable).
+        required by GAC (if applicable).
         '''
         return self._recir_ratio
     @recir_ratio.setter

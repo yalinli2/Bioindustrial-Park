@@ -162,7 +162,7 @@ class ReverseOsmosis(Unit):
 # =============================================================================
 def create_wastewater_treatment_units(ins, outs, IC_method):
     wwt_streams = ins
-    biogas, S604_CHP, recycled_water, brine = outs
+    biogas, S603_CHP, recycled_water, brine = outs
 
     ######################## Units ########################
     # Mix waste liquids for treatment
@@ -170,7 +170,7 @@ def create_wastewater_treatment_units(ins, outs, IC_method):
 
     R601 = InternalCirculationRx('R601', ins=M601-0,
                                  outs=('biogas_R601', 'IC_eff', 'IC_sludge'),
-                                 method=IC_method)
+                                 method=IC_method, T=35+273.15)
 
     R602 = AnMBR('R602', ins=(R601-1, '', 'naocl_R602', 'citric_R602',
                               'bisulfite', 'air_R602'),
@@ -181,40 +181,49 @@ def create_wastewater_treatment_units(ins, outs, IC_method):
                  membrane_material='ceramic',
                  include_aerobic_filter=False,
                  add_GAC=False,
-                 include_degassing_membrane=True)
+                 include_degassing_membrane=True,
+                 T=35+273.15,
+                 # Below include in the TEA
+                 include_pump_building_cost=False,
+                 include_excavation_cost=False)
 
     R603 = FilterTank('R603', ins=(R602-1, '', 'air_R603'),
                       outs=('biogas_R603', 'treated_R603', 'sludge_R603', 'vent_R603'),
-                      filter_type='aerobic')
+                      filter_type='aerobic',
+                      include_degassing_membrane=False,
+                      T=None, # assume previous temperature is sufficient
+                      # Below include in the TEA
+                      include_pump_building_cost=False,
+                      include_excavation_cost=False)
 
     bst.units.Mixer('M602', ins=(R601-0, R602-0, R603-0), outs=biogas)
 
-    # Recycled sludge stream of memberane bioreactor, the majority of it (96%)
-    # goes back to the aerobic filter
-    S602 = bst.units.Splitter('S602', ins=R603-2, outs=('recycled_S602', 'wasted_S602'),
+    # Recycled the majority of sludge (96%) to the aerobic filter,
+    # 96% from the membrane bioreactor in ref [2]
+    S601 = bst.units.Splitter('S601', ins=R603-2, outs=('recycled_S601', 'wasted_S601'),
                               split=0.96)
 
-    S603 = BeltThickener('S603', ins=(R601-2, R602-2, S602-1),
-                         outs=('centrate_S603', 'solids_S603'))
+    S602 = BeltThickener('S602', ins=(R601-2, R602-2, S601-1),
+                         outs=('centrate_S602', 'solids_S602'))
 
     # Sludge centrifuge to separate water (centrate) from sludge
     # Ref [1] included polymer addition in process flow diagram, but did not include
     # in the variable operating cost, thus followed ref [4] to add polymer in AerobicDigestion
-    S604 = SludgeCentrifuge('S604', ins=S603-1,
-                            outs=('centrate_S604', S604_CHP))
+    S603 = SludgeCentrifuge('S603', ins=S602-1,
+                            outs=('centrate_S603', S603_CHP))
 
     # Mix recycles to aerobic digestion
-    bst.units.Mixer('M603', ins=(S602-0, S603-0, S604-0), outs=1-R603)
+    bst.units.Mixer('M603', ins=(S601-0, S602-0, S603-0), outs=1-R603)
 
     # Reverse osmosis to treat aerobically polished water
-    ReverseOsmosis('S605', ins=R603-1, outs=(recycled_water, brine))
+    ReverseOsmosis('S604', ins=R603-1, outs=(recycled_water, brine))
 
 
 create_wastewater_treatment_system = bst.SystemFactory(
     f=create_wastewater_treatment_units,
     ID='wastewater_treatment_sys',
     outs=[dict(ID='biogas'),
-          dict(ID='S604_CHP'),
+          dict(ID='S603_CHP'),
           dict(ID='recycled_water'),
           dict(ID='brine')],
     fixed_ins_size=False,

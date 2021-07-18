@@ -12,7 +12,7 @@
 import math
 import biosteam as bst
 import thermosteam as tmo
-
+from warnings import warn
 # from biorefineries.wwt import WWTpump
 # from biorefineries.wwt.utils import (
 #     auom,
@@ -71,6 +71,15 @@ class FilterTank(bst.Unit):
         if not provided.
     T : float
         Temperature of the filter tank.
+        Will not control temperature if provided as None.
+    include_degassing_membrane : bool
+        If to include a degassing membrane to enhance methane
+        (generated through the digestion reaction) recovery.
+        No degassing membrane will be added if `filter_type` is "aerobic".
+    include_pump_building_cost : bool
+        Whether to include the construction cost of pump building.
+    include_excavation_cost : bool
+        Whether to include the construction cost of excavation.
 
     References
     ----------
@@ -90,15 +99,24 @@ class FilterTank(bst.Unit):
 
     _N_filter_min = 2
     _d_max = 12
+    _t_wall = 8/12
+    _t_slab = 1
     _excav_slope = 1.5
     _constr_access = 3
+
+    # Other equipment
+    auxiliary_unit_names = ('heat_exchanger',)
+    _pumps =  ('lift', 'recir', 'eff', 'sludge')
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
                  filter_type='aerobic',
-                 OLR=1.67, # 2/24/(1-0.95) based on the 2 kg COD/m3/day of effluent in ref [1]
-                 HLR=2, X_decomp=0.74, X_growth=0.22, # X_decomp & X_growth from ref[2]
-                 split=None, T=30+273.15):
+                 OLR=2.25, HLR=0.275,
+                 X_decomp=0.74, X_growth=0.22, # X_decomp & X_growth from ref[2]
+                 split=None, T=30+273.15,
+                 include_degassing_membrane=False,
+                 include_pump_building_cost=False,
+                 include_excavation_cost=False):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
         self.filter_type = filter_type
         self.OLR = OLR
@@ -107,6 +125,13 @@ class FilterTank(bst.Unit):
         self.X_growth = X_growth
         self.split = split if split else get_split_dct(self.chemicals)
         self.T = T
+        self.include_degassing_membrane = include_degassing_membrane
+        self.include_pump_building_cost = include_pump_building_cost
+        self.include_excavation_cost = include_excavation_cost
+
+        # Initiate the attributes
+        self.heat_exchanger = hx = bst.HXutility(None, None, None, T=T)
+        self.heat_utilities = hx.heat_utilities
         self._refresh_rxns()
 
 
@@ -154,6 +179,9 @@ class FilterTank(bst.Unit):
             air_out.imol['N2'] += air_in.imol['N2']
             self._recir_ratio = None
 
+        if self.T is not None:
+            biogas.T = eff.T = waste.T = air_out.T = self.T
+
 
     def _design(self):
         D = self.design_results
@@ -167,17 +195,37 @@ class FilterTank(bst.Unit):
         D['Slab concrete [ft3]'] = VSC
         D['Excavation [ft3]'] = VEX
 
-        ### Pump ###
-        add_inputs = (self.N_filter, self.D)
-        Pump =  WWTpump(ID=f'{self.ID}_lift',
-                        ins=self.ins[0].proxy(),
-                        pump_type='lift',
-                        add_inputs=add_inputs)
+        ### Pumps ###
+        ('lift', 'recir', 'eff', 'sludge')
+        ins_dct = {
+            'lift': self.ins[0].proxy(),
+            'recir': self.ins[1].proxy(),
+            'eff': self.outs[1].proxy(),
+            'sludge': self.outs[2].proxy(),
+            }
 
-        Pump.simulate()
-        D['Pipe stainless steel [kg]'] = Pump.design_results['Pipe stainless steel [kg]']
-        D['Pump stainless steel [kg]'] = Pump.design_results['Pump stainless steel [kg]']
-        self._Pump = Pump
+        type_dct = {
+            'lift': 'lift',
+            'recir': 'recirculation_AF',
+            'eff': 'retentate_AF',
+            'sludge': 'sludge',
+            }
+
+        inputs_dct = {
+            'lift': (self.N_filter, self.D),
+            'recir': (self.N_filter, self.d, self.D),
+            'eff': (self.N_filter, self.D),
+            'sludge': (),
+            }
+
+        WWTpump._batch_adding_pump(self, self._pumps, ins_dct, type_dct, inputs_dct)
+
+        pipe_ss, pump_ss = 0., 0.
+        for i in self._pumps:
+            p = getattr(self, f'{i}_pump')
+            p.simulate()
+            pipe_ss += p.design_results['Pipe stainless steel [kg]']
+            pump_ss += p.design_results['Pump stainless steel [kg]']
 
         ### Packing ###
         # Assume 50%/50% vol/vol LDPE/HDPE
@@ -187,6 +235,9 @@ class FilterTank(bst.Unit):
         # M_LDPE_kg = 0.5 * (1-0.9) * 925 * V_m
         # M_HDPE_kg = 0.5 * (1-0.9) * 950 * V_m
         D['Packing LDPE [m3]'] = D['Packing HDPE [m3]'] = 0.05 * V
+
+        ### Degassing ###
+        D['Degassing membrane'] = self.N_degasser
 
 
     def _design_aerobic(self):
@@ -216,7 +267,7 @@ class FilterTank(bst.Unit):
 
         # Volume of wall/slab concrete, [ft3]
         # 8/12 is wall thickness, 3 is freeboard
-        VWC = 8/12 * math.pi * d_ft * (D_ft+3)
+        VWC = self.t_wall * math.pi * d_ft * (D_ft+3)
         VWC *= N
 
         # 1 is slab thickness
@@ -292,7 +343,8 @@ class FilterTank(bst.Unit):
         # Concrete and excavaction
         VEX, VWC, VSC = \
             D['Excavation [ft3]'], D['Wall concrete [ft3]'], D['Slab concrete [ft3]']
-        C['Excavation'] = VEX / 27 * 8 # 27 is to convert the VEX from ft3 to yard3
+        # 27 is to convert the VEX from ft3 to yard3
+        C['Filter tank excavation'] = VEX/27*8 if self.include_excavation_cost else 0.
         C['Wall concrete'] = VWC / 27 * 650
         C['Slab concrete'] = VSC / 27 * 350
 
@@ -307,18 +359,56 @@ class FilterTank(bst.Unit):
         # TODO: considering adding the O&M and letting user choose if to include
         pumps, building = self._cost_pump()
         C['Pumps'] = pumps
-        C['Pump building'] = building
-        C['Pump excavation'] = VEX / 27 * 0.3
+        C['Pump building'] = building if self.include_pump_building_cost else 0.
+        C['Pump excavation'] = VEX/27*0.3 if self.include_excavation_cost else 0.
 
         F_BM['Pumps'] = F_BM['Pump building'] = F_BM['Pump excavation'] = \
             1.18 * (1+0.007) # 0.007 is for  miscellaneous costs
         lifetime['Pumps'] = 15
 
+        # Degassing membrane
+        C['Degassing membrane'] = 10000 * D['Degassing membrane']
+
         # Set bare module factor to 1 if not otherwise provided
         for k in C.keys():
             F_BM[k] = 1 if not F_BM.get(k) else F_BM.get(k)
 
-        self.power_utility.rate = self.Pump.power_utility.rate
+        ### Heat and power ###
+        # Heat loss, assume air is 17°C, ground is 10°C
+        T = self.T
+        if T is None:
+            loss = 0.
+        else:
+            N_filter, d, D = self.N_filter, self.d, self.D
+            A_W = math.pi * d * D
+            A_F = _d_to_A(d)
+            A_W *= N_filter * _ft2_to_m2
+            A_F *= N_filter * _ft2_to_m2
+
+            loss = 0.7 * (T-(17+273.15)) * A_W / 1e3 # 0.7 W/m2/°C for wall
+            loss += 1.7 * (T-(10+273.15)) * A_F / 1e3 # 1.7 W/m2/°C for floor
+
+        # Fluid heating
+        inf = self._inf
+        if T:
+            H_at_T = inf.thermo.mixture.H(mol=inf.mol, phase='l', T=T, P=101325)
+            duty = -(inf.H - H_at_T)
+        else:
+            duty = 0
+        self.heat_exchanger.simulate_as_auxiliary_exchanger(duty, inf)
+
+        # Pumping
+        pumping = 0.
+        for ID in self._pumps:
+            # if p is None:
+            #     continue
+            p = getattr(self, f'{ID}_pump')
+            pumping += p.power_utility.rate
+
+        # Degassing
+        degassing = 3 * self.N_degasser # assume each uses 3 kW
+
+        self.power_utility.rate = loss + pumping + degassing
 
 
     def _cost_pump(self):
@@ -356,14 +446,6 @@ class FilterTank(bst.Unit):
     def compute_COD(stream):
         return compute_stream_COD(stream)
 
-
-    # TODO: now need to add pumps externally,
-    # consider using algorithms in ref [2] to add influent, recirculation,
-    # and effluent pumps
-    @property
-    def Pump(self):
-        '''[:class:`~.WWTpump`] Lift pump of the filter tank.'''
-        return self._Pump
 
     @property
     def filter_type(self):
@@ -436,6 +518,35 @@ class FilterTank(bst.Unit):
         return self._D
 
     @property
+    def t_wall(self):
+        '''[float] Concrete wall thickness, [ft].'''
+        return self._t_wall
+    @t_wall.setter
+    def t_wall(self, i):
+        self._t_wall = float(i)
+
+    @property
+    def t_slab(self):
+        '''[float] Concrete slab thickness, [ft].'''
+        return self._t_slab
+    @t_slab.setter
+    def t_slab(self, i):
+        self._t_slab = float(i)
+
+    @property
+    def N_degasser(self):
+        '''
+        [int] Number of degassing membrane needed for dissolved biogas removal
+        (optional).
+        '''
+        if self.include_degassing_membrane:
+            if self.filter_type=='aerobic':
+                warn('No degassing membrane needed for when `filter_type` is "aerobic".')
+                return 0
+            return math.ceil(self.Q_cmd/24/30) # assume each can hand 30 m3/d of influent
+        return 0
+
+    @property
     def Q_mgd(self):
         '''
         [float] Influent volumetric flow rate in million gallon per day, [mgd].
@@ -447,20 +558,16 @@ class FilterTank(bst.Unit):
     #     '''[float] Influent volumetric flow rate in gallon per minute, [gpm].'''
     #     return self.Q_mgd*1e6/24/60
 
-    # @property
-    # def Q_cmd(self):
-    #     '''
-    #     [float] Influent volumetric flow rate in cubic meter per day, [cmd].
-    #     '''
-    #     return self.Q_mgd *1e6/_m3_to_gal # [m3/day]
+    @property
+    def Q_cmd(self):
+        '''
+        [float] Influent volumetric flow rate in cubic meter per day, [cmd].
+        '''
+        return self.Q_mgd *1e6/_m3_to_gal # [m3/day]
 
     @property
     def recir_ratio(self):
-        '''
-        [float] Internal recirculation ratio, will be updated in simulation
-        if the originally set ratio is not adequate for the desired flow
-        considering retentate and GAC (if applicable).
-        '''
+        '''[float] Internal recirculation ratio.'''
         return self._recir_ratio or self.ins[1].F_vol/self.ins[0].F_vol
     @recir_ratio.setter
     def recir_ratio(self, i):
