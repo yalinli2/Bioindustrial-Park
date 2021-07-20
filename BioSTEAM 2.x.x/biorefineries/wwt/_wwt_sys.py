@@ -26,6 +26,13 @@ NREL/TP-5100-71949; National Renewable Energy Lab (NREL), 2018.
 https://doi.org/10.2172/1483234
 '''
 
+'''
+TODO:
+    - make it possible to skip any of R601-R603
+    - think of ways to handle the no-power usage thing for the cornstover biorefinery
+'''
+
+
 
 # %%
 
@@ -36,19 +43,20 @@ from biosteam.units.decorators import cost
 # from biorefineries.wwt import (
 #     default_insolubles, get_insoluble_IDs, get_soluble_IDs,
 #     InternalCirculationRx,
-#     FilterTank,
+#     PolishingFilter,
 #     AnMBR
 #     )
 # from biorefineries.wwt.utils import auom, compute_stream_COD
 from _chemicals import default_insolubles, get_insoluble_IDs, get_soluble_IDs
 from utils import auom, compute_stream_COD
 from _internal_circulation_rx import InternalCirculationRx
-from _filter_tank import FilterTank
+from _polishing_filter import PolishingFilter
 from _membrane_bioreactor import AnMBR
 
 _mgd_to_cmh = auom('gallon').conversion_factor('m3')*1e6/24
 _gpm_to_cmh = auom('gallon').conversion_factor('m3')*60
 _Gcal_to_kJ = auom('kcal').conversion_factor('kJ')*1e6 # (also MMkcal/hr)
+_kW_to_kJhr = auom('kW').conversion_factor('kJ/hr')
 
 Rxn = tmo.reaction.Reaction
 ParallelRxn = tmo.reaction.ParallelReaction
@@ -137,7 +145,7 @@ class SludgeCentrifuge(Unit):
       cost=2450000, S=2.7*_mgd_to_cmh, CE=CEPCI[2012], n=1, BM=1.8)
 @cost(basis='Volumetric flow', ID='Evaporator', units='m3/hr',
       # 2.7 in million gallons per day (MGD)
-      kW=1103.636, cost=5000000, S=2.7*_mgd_to_cmh, CE=CEPCI[2012], n=0.6, BM=1.6)
+       kW=1103.636, cost=5000000, S=2.7*_mgd_to_cmh, CE=CEPCI[2012], n=0.6, BM=1.6)
 class ReverseOsmosis(Unit):
     _N_ins = 1
     _N_outs = 2
@@ -155,12 +163,28 @@ class ReverseOsmosis(Unit):
         water.T = brine.T = influent.T
 
 
+class Skipped(Unit):
+    _ins_size_is_fixed = False
+    _outs_size_is_fixed = False
+
+
+    def __init__(self, ID='', ins=None, outs=(), thermo=None):
+        Unit.__init__(self, ID, ins, outs, thermo)
+
+
+    def _run(self):
+        self.outs[1].copy_like(self.ins[0])
+
+
 # %%
 
 # =============================================================================
 # System function
 # =============================================================================
-def create_wastewater_treatment_units(ins, outs, IC_method):
+def create_wastewater_treatment_units(ins, outs,
+                                      skip_R601=False, R601_kwargs={},
+                                      skip_R602=False, R602_kwargs={},
+                                      skip_R603=False, R603_kwargs={}):
     wwt_streams = ins
     biogas, S603_CHP, recycled_water, brine = outs
 
@@ -168,33 +192,55 @@ def create_wastewater_treatment_units(ins, outs, IC_method):
     # Mix waste liquids for treatment
     M601 = bst.units.Mixer('M601', ins=wwt_streams)
 
-    R601 = InternalCirculationRx('R601', ins=M601-0,
-                                 outs=('biogas_R601', 'IC_eff', 'IC_sludge'),
-                                 method=IC_method, T=35+273.15)
+    R601_outs = ('biogas_R601', 'IC_eff', 'IC_sludge')
+    if skip_R601:
+        R601 = Skipped('R601', ins=M601-0, outs=R601_outs)
+    else:
+        R601 = InternalCirculationRx('R601', ins=M601-0, outs=R601_outs,
+                                     T=35+273.15, **R601_kwargs)
 
-    R602 = AnMBR('R602', ins=(R601-1, '', 'naocl_R602', 'citric_R602',
-                              'bisulfite', 'air_R602'),
-                 outs=('biogas_R602', 'permeate_R602', 'sludge_R602', 'vent_R602'),
-                 reactor_type='CSTR',
-                 membrane_configuration='cross-flow',
-                 membrane_type='multi-tube',
-                 membrane_material='ceramic',
-                 include_aerobic_filter=False,
-                 add_GAC=False,
-                 include_degassing_membrane=True,
-                 T=35+273.15,
-                 # Below include in the TEA
-                 include_pump_building_cost=False,
-                 include_excavation_cost=False)
+    R602_outs = ('biogas_R602', 'permeate_R602', 'sludge_R602', 'vent_R602')
+    if skip_R602:
+        R602 = Skipped('R602', ins=R601-1, outs=R602_outs)
+    else:
+        R602 = AnMBR('R602', ins=(R601-1, '', 'naocl_R602', 'citric_R602',
+                                  'bisulfite', 'air_R602'),
+                     outs=R602_outs,
+                     reactor_type='CSTR',
+                     membrane_configuration='cross-flow',
+                     membrane_type='multi-tube',
+                     membrane_material='ceramic',
+                     include_aerobic_filter=False,
+                     add_GAC=False,
+                     include_degassing_membrane=True,
+                     T=None, # heat loss will be adjusted later
+                     # Below include in the TEA
+                     include_pump_building_cost=False,
+                     include_excavation_cost=False, **R602_kwargs)
 
-    R603 = FilterTank('R603', ins=(R602-1, '', 'air_R603'),
-                      outs=('biogas_R603', 'treated_R603', 'sludge_R603', 'vent_R603'),
-                      filter_type='aerobic',
-                      include_degassing_membrane=False,
-                      T=None, # assume previous temperature is sufficient
-                      # Below include in the TEA
-                      include_pump_building_cost=False,
-                      include_excavation_cost=False)
+    R603_outs = ('biogas_R603', 'treated_R603', 'sludge_R603', 'vent_R603')
+    if skip_R603:
+        R603 = Skipped('R603', ins=(R602-1, ''), outs=R603_outs)
+    else:
+        R603 = PolishingFilter('R603', ins=(R602-1, '', 'air_R603'), outs=R603_outs,
+                              filter_type='aerobic',
+                              include_degassing_membrane=False,
+                              T=None, # heat loss will be adjusted later
+                              # Below include in the TEA
+                              include_pump_building_cost=False,
+                              include_excavation_cost=False)
+    # # This isn't working, think of a better way to deal with it
+    # _R603_cost = R603._cost
+    # def adjust_heat_loss():
+    #     _R603_cost()
+    #     loss_kW = R602._heat_loss + R603._heat_loss
+    #     # Assume the heat loss in R602/R603 can be compensated by heat exchange
+    #     # with R601 with an 80% heat transfer efficiency
+    #     R601.heat_utilities[0].duty += loss_kW * _kW_to_kJhr / 0.8
+    #     R602.power_utility.rate -= R602._heat_loss
+    #     R603.power_utility.rate -= R603._heat_loss
+    # R603._cost = adjust_heat_loss
+
 
     bst.units.Mixer('M602', ins=(R601-0, R602-0, R603-0), outs=biogas)
 

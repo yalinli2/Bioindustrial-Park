@@ -14,7 +14,9 @@
 TODO:
     - Add algorithms for other configurations
     (AF, submerged, sparging, GAC, flat sheet, hollow fiber)
+    - Add OLR and volume calculation
     - Maybe add AeMBR as well (make an MBR superclass)
+        - AeMBR can use higher flux and allows for lower transmembrane pressure
 
 References
 ----------
@@ -31,9 +33,10 @@ import thermosteam as tmo
 from biosteam.exceptions import DesignError
 
 # from biorefineries.wwt import (
+#     default_insolubles,
 #     InternalCirculationRx,
 #     WWTpump,
-#     FilterTank,
+#     PolishingFilter,
 #     new_price
 #     )
 # from biorefineries.utils import (
@@ -43,9 +46,10 @@ from biosteam.exceptions import DesignError
 #     get_BD_dct,
 #     get_split_dct,
 #     )
+from _chemicals import default_insolubles
 from _internal_circulation_rx import InternalCirculationRx
 from _wwt_pump import WWTpump
-from _filter_tank import FilterTank
+from _polishing_filter import PolishingFilter
 from _settings import new_price
 from utils import (
     auom,
@@ -130,6 +134,7 @@ class AnMBR(bst.Unit):
     Valorization of Dilute Organic Carbon Waste Streams.
     Energy Environ. Sci. 2016, 9 (3), 1102–1112.
     https://doi.org/10.1039/C5EE03715H.
+
     .. [2] Humbird et al., Process Design and Economics for Biochemical Conversion of
     Lignocellulosic Biomass to Ethanol: Dilute-Acid Pretreatment and Enzymatic
     Hydrolysis of Corn Stover; Technical Report NREL/TP-5100-47764;
@@ -175,7 +180,7 @@ class AnMBR(bst.Unit):
     _constr_access = 3
 
     # Operation-related parameters
-    _HRT = 12
+    _HRT = 24
     _J_max = 12
     _TMP_dct = {
         'cross-flow': 2.5,
@@ -187,6 +192,7 @@ class AnMBR(bst.Unit):
     _v_GAC = 8
     _SGD = 0.625
     _AFF = 3.33
+    _sludge_conc = 10.5
 
     _refresh_rxns = InternalCirculationRx._refresh_rxns
 
@@ -277,12 +283,27 @@ class AnMBR(bst.Unit):
                                   f'not "{m_material}".')
 
 
+    @staticmethod
+    def _degassing(receiving_stream, original_stream):
+        InternalCirculationRx._degassing(receiving_stream, original_stream)
+
+
+    @staticmethod
+    def compute_COD(stream):
+        return compute_stream_COD(stream)
+
+
     # =========================================================================
     # _run
     # =========================================================================
     def _run(self):
         raw, recycled, naocl, citric, bisulfite, air_in = self.ins
         biogas, perm, sludge, air_out = self.outs
+        degassing = self._degassing
+
+        # Initiate the streams
+        biogas.phase = 'g'
+        biogas.empty()
 
         inf = raw.copy()
         inf.mix_from((raw, recycled))
@@ -323,11 +344,17 @@ class AnMBR(bst.Unit):
         self.growth_rxns(inf.mol)
         self.biogas_rxns(inf.mol)
         tmo.separations.split(inf, perm, sludge, self._isplit.data)
-        # perm, sludge = self._split_effluent(inf, perm, sludge)
 
-        biogas.phase = 'g'
-        biogas.receive_vent(perm)
-        biogas.receive_vent(sludge)
+        sludge_conc = self._sludge_conc
+        insolubles = tuple(i.ID for i in self.chemicals if i.ID in default_insolubles)
+        m_insolubles = sludge.imass[insolubles].sum()
+        if m_insolubles/sludge.F_vol <= sludge_conc:
+            diff = sludge.ivol['Water'] - m_insolubles/sludge_conc
+            sludge.ivol['Water'] = m_insolubles/sludge_conc
+            perm.ivol['Water'] += diff
+
+        degassing(biogas, perm)
+        degassing(biogas, sludge)
 
         # Gas for sparging, no sparging needed if submerged or using GAC
         air_out.link_with(air_in)
@@ -741,6 +768,7 @@ class AnMBR(bst.Unit):
             loss = 0.7 * (T-(17+273.15)) * A_W / 1e3 # 0.7 W/m2/°C for wall
             loss += 1.7 * (T-(10+273.15)) * A_F / 1e3 # 1.7 W/m2/°C for floor
             loss += 0.95 * (T-(17+273.15)) * A_F / 1e3 # 0.95 W/m2/°C for floating cover
+        self._heat_loss = loss
 
         # Fluid heating
         inf = self._inf
@@ -767,7 +795,7 @@ class AnMBR(bst.Unit):
 
 
     # Called by _cost
-    _cost_pump = FilterTank._cost_pump
+    _cost_pump = PolishingFilter._cost_pump
 
 
     # Called by _cost
@@ -800,12 +828,6 @@ class AnMBR(bst.Unit):
         building = area * 90 # 90 is the unit price, [$/ft]
 
         return air_pipes, blowers, building
-
-
-    # Util function
-    @staticmethod
-    def compute_COD(stream):
-        return compute_stream_COD(stream)
 
 
     ### Reactor configuration ###
@@ -968,6 +990,7 @@ class AnMBR(bst.Unit):
     @property
     def L_membrane_tank(self):
         '''[float] Length of the membrane tank, [ft].'''
+        #!!! Maybe should set this to 0 for cross-flow?
         return math.ceil((self.cas_per_tank+self.cas_per_tank_spare)*3.4)
 
     @property
@@ -1298,6 +1321,14 @@ class AnMBR(bst.Unit):
         self._biodegradability = i
 
     @property
+    def sludge_conc(self):
+        '''Concentration of biomass ("WWTsludge") in the waste sludge, [g/L].'''
+        return self._sludge_conc
+    @sludge_conc.setter
+    def sludge_conc(self, i):
+        self._sludge_conc = i
+
+    @property
     def Y(self):
         '''[float] Biomass yield, [kg biomass/kg consumed COD].'''
         return self._Y
@@ -1340,5 +1371,5 @@ class AnMBR(bst.Unit):
     def organic_rm(self):
         '''[float] Overall organic (COD) removal rate.'''
         Qi, Qe = self._inf.F_vol, self.outs[1].F_vol
-        Si, Se = self.compute_COD(self._inf), self.compute_COD(self.outs[1].F_vol)
+        Si, Se = self.compute_COD(self._inf), self.compute_COD(self.outs[1])
         return 1 - Qe*Se/(Qi*Si)

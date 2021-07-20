@@ -98,7 +98,8 @@ def create_lc_system(ins, outs):
         ins=[ethanol_production_sys-1, M305-0],
         outs=['biogas', 'S603_CHP', 'recycled_water', 'brine'],
         mockup=True,
-        IC_method='lumped',
+        R601_kwargs={'IC_method': 'lumped'},
+        # R602_kwargs={'HRT': 35},
     )
 
     ### Facilities ###
@@ -118,6 +119,8 @@ def create_lc_system(ins, outs):
                              s.oil_wash_water,
                              s.rvf_wash_water,
                              s.stripping_water,
+                             s.lipid_wash_water,
+                             s.dilution_water,
                              *makeup_water_streams)
     makeup_water = bst.Stream('makeup_water', price=0.000254)
     bst.units.ProcessWaterCenter('PWC',
@@ -199,6 +202,18 @@ net_e_ratio = net_e/(s.lipidcane.Hf/3600/1e3)
 
 # # A lot (twice as ethanol) goes to filter_cake
 # s.filter_cake.Hf/3600/1e3
+
+# For energy-based allocation between ethanol and biodiesel
+ratio = s.ethanol.Hf/(s.ethanol.Hf+s.biodiesel.Hf)
+# Water
+water_usage = u.PWC.F_mass_in*ratio/s.ethanol.F_mass # 19 kg/kg
+water_consumption = (u.PWC.ins[1].F_mass-u.PWC.outs[1].F_mass) * \
+    ratio/s.ethanol.F_mass # about -8.8 kg/kg since lipidcane has 70% of water
+
+# Wastewater
+from utils import compute_stream_COD
+wastewater = u.M601.F_mass_in/s.ethanol.F_mass # about 26 kg/kg
+COD = compute_stream_COD(u.M601.outs[0]) # only about 3.6 g COD/L
 
 # Ratios for IC design
 # from _utils import get_CN_ratio

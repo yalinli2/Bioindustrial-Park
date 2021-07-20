@@ -135,7 +135,7 @@ class InternalCirculationRx(bst.MixTank):
 
 
     def __init__(self, ID='', ins=None, outs=(), thermo=None, *,
-                 method='lumped-Xw', OLRall=1.25, biodegradability={}, Y=0.07,
+                 method='lumped', OLRall=1.25, biodegradability={}, Y=0.07,
                  vessel_type='IC', vessel_material='Stainless steel',
                  V_wf=0.8, kW_per_m3=0., T=35+273.15, **kwargs):
         bst.Unit.__init__(self, ID, ins, outs, thermo)
@@ -175,6 +175,13 @@ class InternalCirculationRx(bst.MixTank):
 
 
     @staticmethod
+    def _degassing(receiving_stream, original_stream):
+        gases = tuple(i.ID for i in original_stream.chemicals if i.locked_state=='g')
+        receiving_stream.imass[gases] += original_stream.imass[gases]
+        original_stream.imass[gases] = 0
+
+
+    @staticmethod
     def compute_COD(stream):
         return compute_stream_COD(stream)
 
@@ -182,6 +189,7 @@ class InternalCirculationRx(bst.MixTank):
     def _run(self):
         inf = self._inf = self.ins[0].copy()
         biogas, eff, waste  = self.outs
+        degassing = self._degassing
 
         # Initiate the streams
         biogas.phase = 'g'
@@ -195,7 +203,7 @@ class InternalCirculationRx(bst.MixTank):
         biogas_rxns(inf.mol)
 
         gas = tmo.Stream(phase='g')
-        gas.receive_vent(inf)
+        degassing(gas, inf)
         Se = compute_stream_COD(inf)
 
         Qi, Si, Xi, Qe, Y = self.Qi, self.Si, self.Xi, self.Qe, self.Y
@@ -212,8 +220,8 @@ class InternalCirculationRx(bst.MixTank):
                 rxns(waste.mol)
                 rxns(eff.mol)
 
-        biogas.receive_vent(eff, accumulate=True)
-        biogas.receive_vent(waste, accumulate=True)
+        degassing(biogas, eff)
+        degassing(biogas, waste)
 
         eff.imass['WWTsludge'] = Xe*self.Qe
         waste.imass['WWTsludge'] = Xw*self.Qw
@@ -226,6 +234,7 @@ class InternalCirculationRx(bst.MixTank):
             for i in (eff, waste):
                 decay_rxn.force_reaction(i.mol)
                 i.imol['O2'] = max(0, i.imol['O2'])
+                degassing(biogas, i)
 
         if self.T:
             biogas.T = eff.T = waste.T = self.T

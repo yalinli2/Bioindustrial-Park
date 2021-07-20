@@ -82,7 +82,8 @@ def create_sc_system(ins, outs):
         ins=[ethanol_production_sys-1, M305-0],
         outs=['biogas', 'S603_CHP', 'recycled_water', 'brine'],
         mockup=True,
-        IC_method='lumped',
+        R601_kwargs={'IC_method': 'lumped'},
+        # R602_kwargs={'HRT': 35},
     )
 
     ### Facilities ###
@@ -179,6 +180,16 @@ net_e_ratio = net_e/(s.sugarcane.Hf/3600/1e3)
 
 # # A lot (similar to ethanol) goes to filter_cake
 # s.filter_cake.Hf/3600/1e3
+
+# Water
+water_usage = u.PWC.F_mass_in/s.ethanol.F_mass # 11 kg/kg
+water_consumption = (u.PWC.ins[1].F_mass-u.PWC.outs[1].F_mass) / \
+    s.ethanol.F_mass # about -5 kg/kg since sugarcane has 70% of water
+
+# Wastewater
+from utils import compute_stream_COD
+wastewater = u.M601.F_mass_in/s.ethanol.F_mass # about 12 kg/kg
+COD = compute_stream_COD(u.M601.outs[0]) # about 5.8 g COD/L
 
 # Ratios for IC design
 # from _utils import get_CN_ratio

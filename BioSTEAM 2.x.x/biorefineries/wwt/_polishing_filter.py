@@ -13,13 +13,16 @@ import math
 import biosteam as bst
 import thermosteam as tmo
 from warnings import warn
-# from biorefineries.wwt import WWTpump
+# from biorefineries.wwt import InternalCirculationRx, WWTpump
 # from biorefineries.wwt.utils import (
+#     default_insolubles,
 #     auom,
 #     compute_stream_COD,
 #     get_digestion_rxns,
 #     get_split_dct
 #     )
+from _chemicals import default_insolubles
+from _internal_circulation_rx import InternalCirculationRx
 from _wwt_pump import WWTpump
 from utils import (
     auom,
@@ -28,7 +31,7 @@ from utils import (
     get_split_dct
     )
 
-__all__ = ('FilterTank',)
+__all__ = ('PolishingFilter',)
 
 _ft_to_m = auom('ft').conversion_factor('m')
 _ft2_to_m2 = auom('ft2').conversion_factor('m2')
@@ -45,9 +48,9 @@ _A_to_d = lambda A: ((4*A)/math.pi)**0.5
 
 # %%
 
-class FilterTank(bst.Unit):
+class PolishingFilter(bst.Unit):
     '''
-    A superclass for anaerobic and aerobic filter treatment as in
+    A superclass for anaerobic and aerobic polishing as in
     Shoener et al. [1]_ Some assumptions adopted from Humbird et al. [2]_
 
     Parameters
@@ -104,6 +107,8 @@ class FilterTank(bst.Unit):
     _excav_slope = 1.5
     _constr_access = 3
 
+    _sludge_conc = 10.5
+
     # Other equipment
     auxiliary_unit_names = ('heat_exchanger',)
     _pumps =  ('lift', 'recir', 'eff', 'sludge')
@@ -146,9 +151,24 @@ class FilterTank(bst.Unit):
         self._i_rm = self._decomp_rxns.X_net.data + self._growth_rxns.X_net.data
 
 
+    @staticmethod
+    def _degassing(receiving_stream, original_stream):
+        InternalCirculationRx._degassing(receiving_stream, original_stream)
+
+
+    @staticmethod
+    def compute_COD(stream):
+        return compute_stream_COD(stream)
+
+
     def _run(self):
         raw, recycled, air_in = self.ins
         biogas, eff, waste, air_out = self.outs
+        degassing = self._degassing
+
+        # Initiate the streams
+        biogas.phase = 'g'
+        biogas.empty()
 
         inf = raw.copy()
         inf.mix_from((raw, recycled))
@@ -157,6 +177,15 @@ class FilterTank(bst.Unit):
         self.growth_rxns(inf.mol)
         self.decomp_rxns.force_reaction(inf.mol)
         tmo.separations.split(inf, eff, waste, self._isplit.data)
+
+        sludge_conc = self._sludge_conc
+        insolubles = tuple(i.ID for i in self.chemicals if i.ID in default_insolubles)
+        m_insolubles = waste.imass[insolubles].sum()
+        if m_insolubles/waste.F_vol <= sludge_conc:
+            diff = waste.ivol['Water'] - m_insolubles/sludge_conc
+            waste.ivol['Water'] = m_insolubles/sludge_conc
+            eff.ivol['Water'] += diff
+
 
         biogas.phase = air_in.phase = air_out.phase = 'g'
 
@@ -168,14 +197,14 @@ class FilterTank(bst.Unit):
             air_in.empty()
 
         if self.filter_type == 'anaerobic':
-            biogas.receive_vent(eff)
-            biogas.receive_vent(waste)
+            degassing(biogas, eff)
+            degassing(biogas, waste)
             air_in.empty()
             air_out.empty()
         else:
             biogas.empty()
-            air_out.receive_vent(eff)
-            air_out.receive_vent(waste)
+            degassing(air_out, eff)
+            degassing(air_out, waste)
             air_out.imol['N2'] += air_in.imol['N2']
             self._recir_ratio = None
 
@@ -260,7 +289,8 @@ class FilterTank(bst.Unit):
             d = _A_to_d(A)
             D = V / d
 
-        V_ft3 = V / _ft3_to_m3
+        self._OLR = ((Q/N)*self.compute_COD(inf)) / V
+        V_ft3 = V / _ft3_to_m3 * N
         d_ft = d / _ft_to_m
         D_ft = D / _ft_to_m
         self._N_filter, self._d, self._D = N, d, D_ft
@@ -387,6 +417,7 @@ class FilterTank(bst.Unit):
 
             loss = 0.7 * (T-(17+273.15)) * A_W / 1e3 # 0.7 W/m2/°C for wall
             loss += 1.7 * (T-(10+273.15)) * A_F / 1e3 # 1.7 W/m2/°C for floor
+        self._heat_loss = loss
 
         # Fluid heating
         inf = self._inf
@@ -439,12 +470,6 @@ class FilterTank(bst.Unit):
             building += 90 * PBA
 
         return pumps, building
-
-
-    # Util function
-    @staticmethod
-    def compute_COD(stream):
-        return compute_stream_COD(stream)
 
 
     @property
@@ -588,6 +613,14 @@ class FilterTank(bst.Unit):
         self._isplit = self.chemicals.isplit(i, order=None)
 
     @property
+    def sludge_conc(self):
+        '''Concentration of biomass ("WWTsludge") in the waste sludge, [g/L].'''
+        return self._sludge_conc
+    @sludge_conc.setter
+    def sludge_conc(self, i):
+        self._sludge_conc = i
+
+    @property
     def X_decomp(self):
         '''
         [float] Fraction of the influent COD converted to biogas
@@ -633,5 +666,5 @@ class FilterTank(bst.Unit):
     def organic_rm(self):
         '''[float] Overall organic (COD) removal rate.'''
         Qi, Qe = self._inf.F_vol, self.outs[1].F_vol
-        Si, Se = self.compute_COD(self._inf), self.compute_COD(self.outs[1].F_vol)
+        Si, Se = self.compute_COD(self._inf), self.compute_COD(self.outs[1])
         return 1 - Qe*Se/(Qi*Si)

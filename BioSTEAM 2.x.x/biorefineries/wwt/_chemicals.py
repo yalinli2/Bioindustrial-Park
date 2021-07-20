@@ -51,6 +51,7 @@ _cal2joule = 4.184 # auom('cal').conversion_factor('J')
 def add_wwt_chemicals(chemicals):
     chems = chemicals.copy()
     exist_IDs = [i.ID for i in chems]
+
     def chemical_database(ID, phase=None, **data):
         if not ID in exist_IDs:
             chemical = tmo.Chemical(ID, **data)
